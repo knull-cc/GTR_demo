@@ -87,11 +87,9 @@ class Model(nn.Module):
 
     def _init_channel_projection(self):
         with torch.no_grad():
-            aug_weight = self.channel_proj.weight[:, self.enc_in:].clone()
             self.channel_proj.weight.zero_()
             self.channel_proj.bias.zero_()
             self.channel_proj.weight[:, :self.enc_in].copy_(torch.eye(self.enc_in))
-            self.channel_proj.weight[:, self.enc_in:].copy_(aug_weight)
 
     def forward(self, x, *args, **kwargs):
         if self.use_revin:
