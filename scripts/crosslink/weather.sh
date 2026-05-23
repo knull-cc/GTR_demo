@@ -8,7 +8,7 @@ model_id_name=weather
 data_name=custom
 
 seq_len=96
-crosslink_lags=1,4,16,64
+crosslink_lags=1,4,16,64,72
 crosslink_rank=16
 
 for pred_len in 96 192 336 720

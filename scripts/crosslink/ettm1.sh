@@ -8,7 +8,7 @@ model_id_name=ETTm1
 data_name=ETTm1
 
 seq_len=96
-crosslink_lags=1,4,16,64
+crosslink_lags=1,4,16,48,64
 crosslink_rank=16
 
 for pred_len in 96 192 336 720

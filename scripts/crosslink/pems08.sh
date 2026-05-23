@@ -8,7 +8,7 @@ model_id_name=PEMS08
 data_name=PEMS
 
 seq_len=96
-crosslink_lags=1,4,16,64
+crosslink_lags=1,4,12,16,64
 crosslink_rank=16
 
 for pred_len in 12 24 48 96
