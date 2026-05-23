@@ -34,6 +34,7 @@ parser.add_argument('--pred_len', type=int, default=96, help='prediction sequenc
 
 # TQNet & CycleNet
 parser.add_argument('--cycle', type=int, default=24, help='cycle length')
+parser.add_argument('--proto_num', type=int, default=8, help='number of shared cycle prototypes for GTR/ProtoCycle')
 parser.add_argument('--model_type', type=str, default='mlp', help='model type, options: [linear, mlp]')
 parser.add_argument('--use_revin', type=int, default=1, help='1: use revin or 0: no revin')
 
@@ -125,7 +126,8 @@ if args.is_training:
     for ii in range(args.itr):
 
         # setting record of experiments
-        setting = '{}_{}_{}_ft{}_sl{}_pl{}_cycle{}_seed{}'.format(
+        proto_tag = '_proto{}'.format(args.proto_num) if args.model == 'GTR' else ''
+        setting = '{}_{}_{}_ft{}_sl{}_pl{}_cycle{}{}_seed{}'.format(
             args.model_id,
             args.model,
             args.data,
@@ -133,6 +135,7 @@ if args.is_training:
             args.seq_len,
             args.pred_len,
             args.cycle,
+            proto_tag,
             fix_seed)
 
         exp = Exp(args)  # set experiments
@@ -149,7 +152,8 @@ if args.is_training:
         torch.cuda.empty_cache()
 else:
     ii = 0
-    setting = '{}_{}_{}_ft{}_sl{}_pl{}_cycle{}_seed{}'.format(
+    proto_tag = '_proto{}'.format(args.proto_num) if args.model == 'GTR' else ''
+    setting = '{}_{}_{}_ft{}_sl{}_pl{}_cycle{}{}_seed{}'.format(
         args.model_id,
         args.model,
         args.data,
@@ -157,6 +161,7 @@ else:
         args.seq_len,
         args.pred_len,
         args.cycle,
+        proto_tag,
         fix_seed)
 
     exp = Exp(args)  # set experiments

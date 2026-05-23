@@ -23,6 +23,7 @@ do
       --pred_len $pred_len \
       --enc_in 170 \
       --cycle 288 \
+      --proto_num 8 \
       --train_epochs 30 \
       --use_revin 1 \
       --patience 5 \

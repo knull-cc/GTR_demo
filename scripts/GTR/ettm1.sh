@@ -22,6 +22,7 @@ do
       --pred_len $pred_len \
       --enc_in 7 \
       --cycle 96 \
+      --proto_num 8 \
       --train_epochs 30 \
       --patience 5 \
       --dropout 0.5 \
