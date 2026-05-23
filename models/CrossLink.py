@@ -26,7 +26,7 @@ class CrossLink(nn.Module):
         if self.use_lowrank:
             self.U = nn.Parameter(torch.randn(N, rank) * 0.02)
             self.V = nn.Parameter(torch.randn(N, rank) * 0.02)
-            self.r = nn.Parameter(torch.zeros(len(self.lags), rank))
+            self.r = nn.Parameter(torch.ones(len(self.lags), rank) * 0.01)
         else:
             self.W = nn.Parameter(torch.zeros(len(self.lags), N, N))
 

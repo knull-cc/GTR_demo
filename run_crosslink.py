@@ -45,6 +45,8 @@ parser.add_argument("--d_model", type=int, default=512, help="dimension of model
 parser.add_argument("--embed", type=str, default="timeF",
                     help="time features encoding, options:[timeF, fixed, learned]")
 parser.add_argument("--do_predict", action="store_true", help="whether to predict unseen future data")
+parser.add_argument("--dropout", type=float, default=0.1, help="dropout rate")
+parser.add_argument("--use_revin", type=int, default=1, help="use RevIN normalization (1=on, 0=off)")
 
 # optimization
 parser.add_argument("--num_workers", type=int, default=10, help="data loader num workers")
@@ -70,9 +72,7 @@ args = parser.parse_args()
 # Shared project plumbing still expects these attributes, but CrossLink scripts
 # do not expose them as model hyperparameters.
 args.cycle = 1
-args.dropout = 0.0
 args.patience = 5
-args.use_revin = 0
 args.output_attention = False
 
 fix_seed = args.random_seed
