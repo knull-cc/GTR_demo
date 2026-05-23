@@ -1,16 +1,21 @@
-model_name=GTR
+#!/usr/bin/env bash
+
+model_name=CrossLink
 
 root_path_name=./dataset/ETT-small
 data_path_name=ETTh1.csv
-model_id_name=ETTh1
+model_id_name=CrossLink_ETTh1
 data_name=ETTh1
 
 seq_len=96
+crosslink_lags=1,4,16,64
+crosslink_rank=16
+
 for pred_len in 96 192 336 720
 do
 for random_seed in 2024
 do
-    python -u run.py \
+    python -u run_crosslink.py \
       --is_training 1 \
       --root_path $root_path_name \
       --data_path $data_path_name \
@@ -22,11 +27,12 @@ do
       --pred_len $pred_len \
       --enc_in 7 \
       --cycle 24 \
+      --d_model 512 \
       --train_epochs 30 \
       --patience 5 \
       --dropout 0.5 \
+      --crosslink_lags $crosslink_lags \
+      --crosslink_rank $crosslink_rank \
       --itr 1 --batch_size 256 --learning_rate 0.001 --random_seed $random_seed
 done
 done
-
-
