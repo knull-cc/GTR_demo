@@ -3,9 +3,9 @@
 model_name=CrossLink
 
 root_path_name=./dataset/ETT-small
-data_path_name=ETTh1.csv
-model_id_name=ETTh1
-data_name=ETTh1
+data_path_name=ETTm1.csv
+model_id_name=ETTm1
+data_name=ETTm1
 
 seq_len=96
 crosslink_lags=1,4,16,64

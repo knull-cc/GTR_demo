@@ -61,8 +61,8 @@ class Model(nn.Module):
         self.pred_len = configs.pred_len
         self.enc_in = configs.enc_in
         self.d_model = configs.d_model
-        self.dropout = configs.dropout
-        self.use_revin = configs.use_revin
+        self.dropout = getattr(configs, "dropout", 0.0)
+        self.use_revin = getattr(configs, "use_revin", 0)
 
         self.lags = _parse_lags(getattr(configs, "crosslink_lags", (1, 4, 16, 64)))
         rank = getattr(configs, "crosslink_rank", 16)

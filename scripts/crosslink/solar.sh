@@ -2,10 +2,10 @@
 
 model_name=CrossLink
 
-root_path_name=./dataset/ETT-small
-data_path_name=ETTh1.csv
-model_id_name=ETTh1
-data_name=ETTh1
+root_path_name=./dataset/Solar
+data_path_name=solar_AL.txt
+model_id_name=Solar
+data_name=Solar
 
 seq_len=96
 crosslink_lags=1,4,16,64
@@ -25,10 +25,10 @@ do
       --features M \
       --seq_len $seq_len \
       --pred_len $pred_len \
-      --enc_in 7 \
+      --enc_in 137 \
       --train_epochs 30 \
       --crosslink_lags $crosslink_lags \
       --crosslink_rank $crosslink_rank \
-      --itr 1 --batch_size 256 --learning_rate 0.001 --random_seed $random_seed
+      --itr 1 --batch_size 64 --learning_rate 0.003 --random_seed $random_seed
 done
 done
