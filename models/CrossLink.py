@@ -68,28 +68,31 @@ class Model(nn.Module):
         rank = getattr(configs, "crosslink_rank", 16)
         rank = None if rank is None or rank <= 0 else rank
 
+        self.aug_channels = self.enc_in * (len(self.lags) + 1)
         self.crosslink = CrossLink(N=self.enc_in, lags=self.lags, rank=rank)
-        self.channel_proj = nn.Linear(self.enc_in * (len(self.lags) + 1), self.enc_in)
-        self.input_proj = nn.Linear(self.seq_len, self.d_model)
+        self.input_proj = nn.Linear(self.seq_len, self.d_model, bias=False)
 
         self.model = nn.Sequential(
-            nn.Linear(self.d_model, self.d_model),
+            nn.Linear(self.d_model, self.d_model, bias=False),
             nn.GELU(),
-            nn.Linear(self.d_model, self.d_model),
+            nn.Linear(self.d_model, self.d_model, bias=False),
             nn.GELU(),
         )
         self.output_proj = nn.Sequential(
             nn.Dropout(self.dropout),
-            nn.Linear(self.d_model, self.pred_len),
+            nn.Linear(self.d_model, self.pred_len, bias=False),
         )
+        self.output_channel_proj = nn.Linear(self.aug_channels, self.enc_in)
 
-        self._init_channel_projection()
+        self._init_output_channel_projection()
 
-    def _init_channel_projection(self):
+    def _init_output_channel_projection(self):
         with torch.no_grad():
-            self.channel_proj.weight.zero_()
-            self.channel_proj.bias.zero_()
-            self.channel_proj.weight[:, :self.enc_in].copy_(torch.eye(self.enc_in))
+            aug_weight = self.output_channel_proj.weight[:, self.enc_in:].clone()
+            self.output_channel_proj.weight.zero_()
+            self.output_channel_proj.bias.zero_()
+            self.output_channel_proj.weight[:, :self.enc_in].copy_(torch.eye(self.enc_in))
+            self.output_channel_proj.weight[:, self.enc_in:].copy_(aug_weight)
 
     def forward(self, x, *args, **kwargs):
         if self.use_revin:
@@ -98,12 +101,12 @@ class Model(nn.Module):
             x = (x - seq_mean) / torch.sqrt(seq_var)
 
         x_aug = self.crosslink(x)
-        x = self.channel_proj(x_aug)
 
-        x_input = x.permute(0, 2, 1)
+        x_input = x_aug.permute(0, 2, 1)
         input_proj = self.input_proj(x_input)
         hidden = self.model(input_proj)
         output = self.output_proj(hidden + input_proj).permute(0, 2, 1)
+        output = self.output_channel_proj(output)
 
         if self.use_revin:
             output = output * torch.sqrt(seq_var) + seq_mean
