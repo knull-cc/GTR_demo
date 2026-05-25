@@ -85,11 +85,11 @@ class ChannelIndependentPlugIn(nn.Module):
         return self.fuse(hidden), batch_size, channels
 
     def forward(self, x_win, e_win, y_hat):
-        # delta = mean of recent residuals: zero-parameter, uses actual test residuals at
-        # inference time so no val->test distribution shift for the point correction
         e_base = e_win.permute(0, 2, 1).mean(dim=-1, keepdim=True)  # [B, C, 1]
-        delta = e_base.expand(-1, -1, self.pred_len).permute(0, 2, 1)  # [B, H, C]
+        e_base_flat = e_base.expand(-1, -1, self.pred_len).permute(0, 2, 1)  # [B, H, C]
 
         hidden, batch_size, channels = self.encode(x_win, e_win, y_hat)
-        logvar = self.head_logvar(hidden).view(batch_size, channels, self.pred_len)
-        return delta, logvar.permute(0, 2, 1)
+        learned = self.head_delta(hidden).view(batch_size, channels, self.pred_len).permute(0, 2, 1)
+        delta = e_base_flat + learned
+        logvar = self.head_logvar(hidden).view(batch_size, channels, self.pred_len).permute(0, 2, 1)
+        return delta, logvar
