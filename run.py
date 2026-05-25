@@ -88,9 +88,6 @@ parser.add_argument('--apec_use_state_features', type=int, default=1, help='1: u
 parser.add_argument('--apec_epochs', type=int, default=15, help='APEC plug-in training epochs')
 parser.add_argument('--apec_learning_rate', type=float, default=0.001, help='APEC plug-in learning rate')
 parser.add_argument('--apec_alpha', type=float, default=0.1, help='APEC conformal miscoverage level')
-parser.add_argument('--apec_backbone_ratio', type=float, default=0.6, help='fraction of train samples reserved for backbone')
-parser.add_argument('--apec_plugin_ratio', type=float, default=0.2, help='fraction of train samples reserved for plug-in')
-parser.add_argument('--apec_plugin_val_ratio', type=float, default=0.25, help='fraction of plug-in samples reserved for validation')
 parser.add_argument('--apec_val_plugin_ratio', type=float, default=0.65, help='fraction of official val used to train APEC plug-in')
 parser.add_argument('--apec_val_gamma_ratio', type=float, default=0.15, help='fraction of official val used to select APEC gamma')
 parser.add_argument('--apec_var_warmup', type=int, default=3, help='epochs to train delta before log variance')
@@ -102,6 +99,8 @@ parser.add_argument('--apec_plugin_patience', type=int, default=5, help='early s
 parser.add_argument('--apec_gamma_step', type=float, default=0.1, help='grid step for validation-selected delta shrinkage')
 parser.add_argument('--apec_gamma_mode', type=str, default='per_horizon',
                     help='APEC gamma mode, options: [scalar, per_horizon]')
+parser.add_argument('--apec_gamma_min_improve', type=float, default=0.003,
+                    help='per-horizon gamma: min relative MSE improvement to use correction (0.003 = 0.3%%)')
 parser.add_argument('--apec_logvar_min', type=float, default=-7.0, help='minimum clamped log variance')
 parser.add_argument('--apec_logvar_max', type=float, default=7.0, help='maximum clamped log variance')
 

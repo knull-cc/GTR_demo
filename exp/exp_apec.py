@@ -151,28 +151,6 @@ class Exp_APEC(Exp_Basic):
         self.model.train()
         return np.average(total_loss)
 
-    def _split_train_indices(self, train_len):
-        backbone_end = int(train_len * self.args.apec_backbone_ratio)
-        plugin_end = int(train_len * (self.args.apec_backbone_ratio + self.args.apec_plugin_ratio))
-        backbone_end = max(2, min(backbone_end, train_len - 2))
-        plugin_end = max(backbone_end + 1, min(plugin_end, train_len - 1))
-        plugin_start = min(backbone_end + self.args.apec_window, train_len - 2)
-        plugin_end = min(max(plugin_start + 2, plugin_end), train_len - 1)
-        plugin_len = plugin_end - plugin_start
-        plugin_val_size = max(1, int(plugin_len * self.args.apec_plugin_val_ratio))
-        plugin_val_size = min(plugin_val_size, plugin_len - 1)
-        plugin_train_end = plugin_end - plugin_val_size
-
-        backbone_val_size = max(1, int(backbone_end * 0.15))
-        backbone_train_end = max(1, backbone_end - backbone_val_size)
-
-        return (
-            range(0, backbone_train_end),
-            range(backbone_train_end, backbone_end),
-            range(plugin_start, plugin_train_end),
-            range(plugin_train_end, plugin_end),
-            range(plugin_end, train_len),
-        )
 
     def _split_posthoc_indices(self, data_len):
         start = min(self.args.apec_window, max(0, data_len - 3))
@@ -420,6 +398,10 @@ class Exp_APEC(Exp_Basic):
         best_idx = torch.argmin(mse_grid, dim=0)
         gamma_tensor = torch.tensor(gamma_values, device=self.device, dtype=mse_grid.dtype)[best_idx]
         best_mse = mse_grid[best_idx, torch.arange(mse_grid.size(1), device=self.device)]
+        # only use correction for horizons where improvement exceeds threshold
+        threshold = getattr(self.args, 'apec_gamma_min_improve', 0.003)
+        no_improve = (base_mse - best_mse) < threshold * base_mse.clamp_min(1e-8)
+        gamma_tensor = gamma_tensor.masked_fill(no_improve, 0.0)
         self.gamma = gamma_tensor.detach().cpu()
 
         print("APEC per-horizon gamma sweep summary:")
@@ -496,7 +478,7 @@ class Exp_APEC(Exp_Basic):
                 train_delta_l2.append(delta_l2.item())
 
             print("APEC Epoch: {0} cost time: {1}".format(epoch + 1, time.time() - epoch_time))
-            val_mse, base_val_mse = self._eval_plugin_mse(plugin_val_loader)
+            val_mse, base_val_mse = self._eval_plugin_mse(plugin_val_loader, gamma=0.5)
             print("APEC Epoch: {0} | Loss: {1:.7f} MSE: {2:.7f} NLL: {3:.7f} DeltaL2: {4:.7f}".format(
                 epoch + 1, np.average(train_loss), np.average(train_mse), np.average(train_nll),
                 np.average(train_delta_l2)))
@@ -560,7 +542,7 @@ class Exp_APEC(Exp_Basic):
         if not os.path.exists(path):
             os.makedirs(path)
 
-        plugin_idx, plugin_val_idx, cal_idx = self._split_posthoc_indices(len(vali_data))
+        plugin_idx, cal_idx, plugin_val_idx = self._split_posthoc_indices(len(vali_data))
         print("APEC split sizes | backbone_train: {} backbone_val: {} plugin: {} plugin_val: {} calibration: {}".format(
             len(train_data), len(vali_data), len(plugin_idx), len(plugin_val_idx), len(cal_idx)))
         print(">>>>>>>stage 1: train frozen backbone : {}>>>>>>>>>>>>>>>>>>>>>>>>>>".format(setting))
