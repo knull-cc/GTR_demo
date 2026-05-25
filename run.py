@@ -90,7 +90,7 @@ parser.add_argument('--apec_learning_rate', type=float, default=0.001, help='APE
 parser.add_argument('--apec_alpha', type=float, default=0.1, help='APEC conformal miscoverage level')
 parser.add_argument('--apec_val_plugin_ratio', type=float, default=0.65, help='fraction of official val used to train APEC plug-in')
 parser.add_argument('--apec_val_gamma_ratio', type=float, default=0.15, help='fraction of official val used to select APEC gamma')
-parser.add_argument('--apec_var_warmup', type=int, default=3, help='epochs to train delta before log variance')
+parser.add_argument('--apec_var_warmup', type=int, default=0, help='epochs to train delta before log variance (0 = always train logvar; required when delta is fixed mean-reversion)')
 parser.add_argument('--apec_mse_warmup', type=int, default=3, help='epochs to anneal auxiliary MSE after variance warmup')
 parser.add_argument('--apec_mse_lambda', type=float, default=0.1, help='initial auxiliary MSE weight after variance warmup')
 parser.add_argument('--apec_nll_weight', type=float, default=0.05, help='weight of Gaussian NLL after variance warmup')
