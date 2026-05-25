@@ -10,42 +10,10 @@ import torch
 import torch.nn as nn
 from torch import optim
 from torch.optim import lr_scheduler
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Subset
 
 import os
 import time
-
-
-class APECWindowDataset(Dataset):
-    def __init__(self, base_data, indices, residuals, window, feature_offset):
-        self.base_data = base_data
-        self.indices = list(indices)
-        self.residuals = residuals
-        self.window = window
-        self.feature_offset = feature_offset
-
-    def __len__(self):
-        return len(self.indices)
-
-    def _left_pad(self, values):
-        if len(values) >= self.window:
-            return values
-        pad_shape = (self.window - len(values), values.shape[-1])
-        pad = np.zeros(pad_shape, dtype=np.float32)
-        return np.concatenate([pad, values], axis=0)
-
-    def __getitem__(self, item):
-        index = self.indices[item]
-        seq_x, seq_y, seq_x_mark, seq_y_mark, cycle_index = self.base_data[index]
-        s_end = index + self.base_data.seq_len
-        start = max(0, s_end - self.window)
-
-        x_win = self.base_data.data_x[start:s_end, self.feature_offset:].astype(np.float32)
-        e_win = self.residuals[start:s_end].astype(np.float32)
-        x_win = self._left_pad(x_win)
-        e_win = self._left_pad(e_win)
-
-        return seq_x, seq_y, seq_x_mark, seq_y_mark, cycle_index, x_win, e_win
 
 
 class Exp_APEC(Exp_Basic):
@@ -59,77 +27,53 @@ class Exp_APEC(Exp_Basic):
         if self.plugin is not None:
             return self.plugin
         n_channels = 1 if self.args.features == 'MS' else self.args.enc_in
-        self.plugin = APEC.ChannelIndependentPlugIn(
-            window=self.args.apec_window,
+        self.plugin = APEC.TrendPlugin(
             pred_len=self.args.pred_len,
             n_channels=n_channels,
-            d_model=self.args.apec_hidden,
-            dropout=self.args.apec_dropout,
-            use_state_features=bool(self.args.apec_use_state_features),
         ).to(self.device)
         return self.plugin
 
     def _build_model(self):
         model_dict = {
-            'Autoformer': Autoformer,
-            'Transformer': Transformer,
-            'Informer': Informer,
-            'DLinear': DLinear,
-            'NLinear': NLinear,
-            'Linear': Linear,
-            'PatchTST': PatchTST,
-            'SegRNN': SegRNN,
-            'CycleNet': CycleNet,
-            'iTransformer': iTransformer,
-            'TimeXer': TimeXer,
-            'GTR': GTR,
-            'GTRDLinear': GTRDLinear,
-            'GTRPatchTST': GTRPatchTST,
-            'GTRiTransformer': GTRiTransformer
+            'Autoformer': Autoformer, 'Transformer': Transformer, 'Informer': Informer,
+            'DLinear': DLinear, 'NLinear': NLinear, 'Linear': Linear,
+            'PatchTST': PatchTST, 'SegRNN': SegRNN, 'CycleNet': CycleNet,
+            'iTransformer': iTransformer, 'TimeXer': TimeXer,
+            'GTR': GTR, 'GTRDLinear': GTRDLinear, 'GTRPatchTST': GTRPatchTST,
+            'GTRiTransformer': GTRiTransformer,
         }
         model = model_dict[self.args.model].Model(self.args).float()
-
         if self.args.use_multi_gpu and self.args.use_gpu:
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
         return model
 
     def _get_data(self, flag):
-        data_set, data_loader = data_provider(self.args, flag)
-        return data_set, data_loader
+        return data_provider(self.args, flag)
 
     def _target_offset(self):
         return -1 if self.args.features == 'MS' else 0
 
     def _target_slice(self, batch_y):
-        f_dim = self._target_offset()
-        return batch_y[:, -self.args.pred_len:, f_dim:]
+        return batch_y[:, -self.args.pred_len:, self._target_offset():]
 
-    def _make_loader(self, dataset, shuffle=False, drop_last=False):
-        return DataLoader(
-            dataset,
-            batch_size=self.args.batch_size,
-            shuffle=shuffle,
-            num_workers=self.args.num_workers,
-            drop_last=drop_last,
-        )
+    def _make_loader(self, dataset, shuffle=False):
+        return DataLoader(dataset, batch_size=self.args.batch_size, shuffle=shuffle,
+                          num_workers=self.args.num_workers, drop_last=False)
 
     def _forward_backbone(self, batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle):
         dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
         dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
-
         if self.args.use_amp:
             with torch.cuda.amp.autocast():
                 outputs = self._dispatch_backbone(batch_x, batch_x_mark, dec_inp, batch_y_mark, batch_cycle)
         else:
             outputs = self._dispatch_backbone(batch_x, batch_x_mark, dec_inp, batch_y_mark, batch_cycle)
-
-        f_dim = self._target_offset()
-        return outputs[:, -self.args.pred_len:, f_dim:]
+        return outputs[:, -self.args.pred_len:, self._target_offset():]
 
     def _dispatch_backbone(self, batch_x, batch_x_mark, dec_inp, batch_y_mark, batch_cycle):
-        if any(substr in self.args.model for substr in {'CycleNet', 'GTR'}):
+        if any(s in self.args.model for s in ('CycleNet', 'GTR')):
             return self.model(batch_x, batch_cycle)
-        if any(substr in self.args.model for substr in {'Linear', 'MLP', 'SegRNN', 'TST'}):
+        if any(s in self.args.model for s in ('Linear', 'MLP', 'SegRNN', 'TST')):
             return self.model(batch_x)
         if self.args.output_attention:
             return self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
@@ -145,14 +89,11 @@ class Exp_APEC(Exp_Basic):
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
                 batch_cycle = batch_cycle.int().to(self.device)
-
                 outputs = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
                 true = self._target_slice(batch_y)
-                loss = criterion(outputs.detach().cpu(), true.detach().cpu())
-                total_loss.append(loss.item())
+                total_loss.append(criterion(outputs.detach().cpu(), true.detach().cpu()).item())
         self.model.train()
         return np.average(total_loss)
-
 
     def _split_posthoc_indices(self, data_len):
         start = min(self.args.apec_window, max(0, data_len - 3))
@@ -161,12 +102,7 @@ class Exp_APEC(Exp_Basic):
         gamma_end = plugin_end + max(1, int(usable * self.args.apec_val_gamma_ratio))
         plugin_end = min(plugin_end, data_len - 2)
         gamma_end = min(max(gamma_end, plugin_end + 1), data_len - 1)
-
-        return (
-            range(start, plugin_end),
-            range(plugin_end, gamma_end),
-            range(gamma_end, data_len),
-        )
+        return range(start, plugin_end), range(plugin_end, gamma_end), range(gamma_end, data_len)
 
     def _train_backbone(self, setting, train_loader, vali_loader, path):
         time_now = time.time()
@@ -174,24 +110,16 @@ class Exp_APEC(Exp_Basic):
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
         model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
         criterion = nn.MSELoss()
-
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
-
-        scheduler = lr_scheduler.OneCycleLR(
-            optimizer=model_optim,
-            steps_per_epoch=train_steps,
-            pct_start=self.args.pct_start,
-            epochs=self.args.train_epochs,
-            max_lr=self.args.learning_rate,
-        )
-
+        scheduler = lr_scheduler.OneCycleLR(optimizer=model_optim, steps_per_epoch=train_steps,
+                                             pct_start=self.args.pct_start, epochs=self.args.train_epochs,
+                                             max_lr=self.args.learning_rate)
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
             self.model.train()
             epoch_time = time.time()
-
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
                 iter_count += 1
                 model_optim.zero_grad()
@@ -200,12 +128,10 @@ class Exp_APEC(Exp_Basic):
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
                 batch_cycle = batch_cycle.int().to(self.device)
-
                 outputs = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
                 true = self._target_slice(batch_y)
                 loss = criterion(outputs, true)
                 train_loss.append(loss.item())
-
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
                     speed = (time.time() - time_now) / iter_count
@@ -213,7 +139,6 @@ class Exp_APEC(Exp_Basic):
                     print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
                     iter_count = 0
                     time_now = time.time()
-
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
                     scaler.step(model_optim)
@@ -221,11 +146,9 @@ class Exp_APEC(Exp_Basic):
                 else:
                     loss.backward()
                     model_optim.step()
-
                 if self.args.lradj == 'TST':
                     adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args, printout=False)
                     scheduler.step()
-
             print("Backbone Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             vali_loss = self._vali_backbone(vali_loader, criterion)
@@ -235,198 +158,59 @@ class Exp_APEC(Exp_Basic):
             if early_stopping.early_stop:
                 print("Backbone early stopping")
                 break
-
             if self.args.lradj != 'TST':
                 adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args)
             else:
                 print('Updating learning rate to {}'.format(scheduler.get_last_lr()[0]))
+        self.model.load_state_dict(torch.load(os.path.join(path, 'checkpoint.pth')))
 
-        best_model_path = os.path.join(path, 'checkpoint.pth')
-        self.model.load_state_dict(torch.load(best_model_path))
+    # ── plugin helpers ────────────────────────────────────────────────────────
 
-    def _build_one_step_residuals(self, data_set, valid_after=0):
-        feature_offset = self._target_offset()
-        channels = data_set.data_x[:, feature_offset:].shape[-1]
-        residuals = np.zeros((len(data_set.data_x), channels), dtype=np.float32)
-        loader = self._make_loader(data_set, shuffle=False, drop_last=False)
-
-        self.model.eval()
-        start = 0
-        with torch.no_grad():
-            for batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle in loader:
-                batch_size = batch_x.shape[0]
-                batch_x = batch_x.float().to(self.device)
-                batch_y = batch_y.float().to(self.device)
-                batch_x_mark = batch_x_mark.float().to(self.device)
-                batch_y_mark = batch_y_mark.float().to(self.device)
-                batch_cycle = batch_cycle.int().to(self.device)
-
-                outputs = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
-                true = self._target_slice(batch_y)
-                err = (true[:, 0, :] - outputs[:, 0, :]).detach().cpu().numpy().astype(np.float32)
-                sample_indices = np.arange(start, start + batch_size)
-                positions = sample_indices + data_set.seq_len
-                keep = (sample_indices >= valid_after) & (positions < len(residuals))
-                residuals[positions[keep]] = err[keep]
-                start += batch_size
-
-        first_valid_pos = valid_after + data_set.seq_len
-        if first_valid_pos > 0 and first_valid_pos < len(residuals):
-            tail = min(first_valid_pos + data_set.seq_len, len(residuals))
-            valid_slice = residuals[first_valid_pos:tail]
-            nonzero = np.any(valid_slice != 0, axis=-1)
-            if nonzero.any():
-                residuals[:first_valid_pos] = valid_slice[nonzero].mean(axis=0)
-        return residuals
-
-    def _set_logvar_trainable(self, trainable):
-        for param in self.plugin.head_logvar.parameters():
-            param.requires_grad = trainable
-
-    def _apec_loss(self, y, y_hat, delta, logvar, epoch):
-        pred = y_hat + delta
-        mse = torch.mean((y - pred) ** 2)
-        delta_l2 = torch.mean(delta ** 2)
-
-        if epoch < self.args.apec_var_warmup:
-            total = mse + self.args.apec_delta_l2 * delta_l2
-            return total, mse.detach(), torch.zeros_like(mse), delta_l2.detach()
-
-        logvar = logvar.clamp(self.args.apec_logvar_min, self.args.apec_logvar_max)
-        var = torch.exp(logvar)
-        nll = 0.5 * (logvar + (y - pred) ** 2 / (var + 1e-6)).mean()
-
-        total = mse + self.args.apec_nll_weight * nll + self.args.apec_delta_l2 * delta_l2
-        return total, mse.detach(), nll.detach(), delta_l2.detach()
-
-    def _gamma_to_tensor(self, gamma, ref):
-        if isinstance(gamma, torch.Tensor):
-            gamma_tensor = gamma.to(device=ref.device, dtype=ref.dtype)
-        else:
-            gamma_tensor = torch.tensor(gamma, device=ref.device, dtype=ref.dtype)
-
-        if gamma_tensor.ndim == 0:
-            return gamma_tensor
-        if gamma_tensor.ndim == 1:
-            return gamma_tensor.view(1, -1, 1)
-        if gamma_tensor.ndim == 2:
-            return gamma_tensor.unsqueeze(0)
-        return gamma_tensor
+    def _delta(self, batch_size):
+        return self.plugin.T.unsqueeze(0).expand(batch_size, -1, -1)
 
     def _apply_gamma(self, delta, gamma=None):
         if gamma is None:
             gamma = self.gamma
-        return self._gamma_to_tensor(gamma, delta) * delta
+        if isinstance(gamma, torch.Tensor):
+            g = gamma.to(device=delta.device, dtype=delta.dtype).view(1, -1, 1)
+        else:
+            g = torch.tensor(gamma, device=delta.device, dtype=delta.dtype)
+        return g * delta
 
     def _gamma_for_save(self):
-        if isinstance(self.gamma, torch.Tensor):
-            return self.gamma.detach().cpu()
-        return float(self.gamma)
+        return float(self.gamma) if not isinstance(self.gamma, torch.Tensor) else self.gamma.detach().cpu()
 
     def _gamma_summary(self):
-        if isinstance(self.gamma, torch.Tensor):
-            gamma = self.gamma.detach().float().cpu()
-            return "mean:{:.2f}, min:{:.2f}, max:{:.2f}, zero_frac:{:.2f}".format(
-                gamma.mean().item(),
-                gamma.min().item(),
-                gamma.max().item(),
-                (gamma == 0).float().mean().item(),
-            )
         return "{:.2f}".format(float(self.gamma))
 
     def _gamma_metric_value(self):
-        if isinstance(self.gamma, torch.Tensor):
-            return self.gamma.detach().float().mean().item()
         return float(self.gamma)
 
-    def _eval_plugin_mse(self, eval_loader, gamma=1.0):
-        corrected_losses = []
-        base_losses = []
+    def _eval_plugin_mse(self, loader, gamma=1.0):
+        corrected_losses, base_losses = [], []
         self.model.eval()
         self.plugin.eval()
         with torch.no_grad():
-            for batch in eval_loader:
-                batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, x_win, e_win = batch
+            for batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle in loader:
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
                 batch_cycle = batch_cycle.int().to(self.device)
-                x_win = x_win.float().to(self.device)
-                e_win = e_win.float().to(self.device)
-
                 y_hat = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
                 true = self._target_slice(batch_y)
-                delta, _ = self.plugin(x_win, e_win, y_hat)
-                pred = y_hat + self._apply_gamma(delta, gamma)
+                pred = y_hat + gamma * self._delta(y_hat.shape[0])
                 corrected_losses.append(torch.mean((true - pred) ** 2).item())
                 base_losses.append(torch.mean((true - y_hat) ** 2).item())
         return np.average(corrected_losses), np.average(base_losses)
-
-    def _select_per_horizon_gamma(self, eval_loader, gamma_values):
-        score_sums = None
-        base_sum = None
-        count = 0
-        self.model.eval()
-        self.plugin.eval()
-        with torch.no_grad():
-            for batch in eval_loader:
-                batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, x_win, e_win = batch
-                batch_x = batch_x.float().to(self.device)
-                batch_y = batch_y.float().to(self.device)
-                batch_x_mark = batch_x_mark.float().to(self.device)
-                batch_y_mark = batch_y_mark.float().to(self.device)
-                batch_cycle = batch_cycle.int().to(self.device)
-                x_win = x_win.float().to(self.device)
-                e_win = e_win.float().to(self.device)
-
-                y_hat = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
-                true = self._target_slice(batch_y)
-                delta, _ = self.plugin(x_win, e_win, y_hat)
-
-                if score_sums is None:
-                    score_sums = torch.zeros(
-                        len(gamma_values), true.size(1), device=self.device, dtype=true.dtype)
-                    base_sum = torch.zeros(true.size(1), device=self.device, dtype=true.dtype)
-
-                base_sum += ((true - y_hat) ** 2).sum(dim=(0, 2))
-                for j, gamma in enumerate(gamma_values):
-                    pred = y_hat + float(gamma) * delta
-                    score_sums[j] += ((true - pred) ** 2).sum(dim=(0, 2))
-                count += true.size(0) * true.size(2)
-
-        mse_grid = score_sums / max(count, 1)
-        base_mse = base_sum / max(count, 1)
-        best_idx = torch.argmin(mse_grid, dim=0)
-        gamma_tensor = torch.tensor(gamma_values, device=self.device, dtype=mse_grid.dtype)[best_idx]
-        best_mse = mse_grid[best_idx, torch.arange(mse_grid.size(1), device=self.device)]
-        # only use correction for horizons where improvement exceeds threshold
-        threshold = getattr(self.args, 'apec_gamma_min_improve', 0.01)
-        no_improve = (base_mse - best_mse) < threshold * base_mse.clamp_min(1e-8)
-        gamma_tensor = gamma_tensor.masked_fill(no_improve, 0.0)
-        self.gamma = gamma_tensor.detach().cpu()
-
-        print("APEC per-horizon gamma sweep summary:")
-        print("  base_mean={:.6f} corrected_mean={:.6f} delta={:+.6f}".format(
-            base_mse.mean().item(),
-            best_mse.mean().item(),
-            best_mse.mean().item() - base_mse.mean().item(),
-        ))
-        print("  gamma {}".format(self._gamma_summary()))
-        return self.gamma
 
     def _select_gamma(self, eval_loader):
         if self.args.apec_gamma_step <= 0:
             self.gamma = 1.0
             return self.gamma
-
         gamma_values = np.arange(0.0, 1.0 + 0.5 * self.args.apec_gamma_step, self.args.apec_gamma_step)
-        if self.args.apec_gamma_mode == 'per_horizon':
-            return self._select_per_horizon_gamma(eval_loader, gamma_values)
-
-        best_gamma = 0.0
-        best_mse = None
-        baseline_mse = None
+        best_gamma, best_mse, baseline_mse = 0.0, None, None
         print("APEC gamma sweep:")
         for gamma in gamma_values:
             mse, base_mse = self._eval_plugin_mse(eval_loader, gamma=float(gamma))
@@ -457,44 +241,29 @@ class Exp_APEC(Exp_Basic):
         for epoch in range(self.args.apec_epochs):
             self.model.eval()
             self.plugin.train()
-            self._set_logvar_trainable(epoch >= self.args.apec_var_warmup)
             train_loss = []
-            train_mse = []
-            train_nll = []
-            train_delta_l2 = []
             epoch_time = time.time()
 
-            for batch in plugin_loader:
-                batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, x_win, e_win = batch
+            for batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle in plugin_loader:
                 optimizer.zero_grad()
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
                 batch_cycle = batch_cycle.int().to(self.device)
-                x_win = x_win.float().to(self.device)
-                e_win = e_win.float().to(self.device)
-
                 with torch.no_grad():
                     y_hat = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
                 true = self._target_slice(batch_y)
-                delta, logvar = self.plugin(x_win, e_win, y_hat)
-                loss, mse, nll, delta_l2 = self._apec_loss(true, y_hat, delta, logvar, epoch)
+                pred = y_hat + self._delta(y_hat.shape[0])
+                loss = torch.mean((true - pred) ** 2)
                 loss.backward()
                 optimizer.step()
-
                 train_loss.append(loss.item())
-                train_mse.append(mse.item())
-                train_nll.append(nll.item())
-                train_delta_l2.append(delta_l2.item())
 
-            print("APEC Epoch: {0} cost time: {1}".format(epoch + 1, time.time() - epoch_time))
+            print("APEC Epoch: {0} cost time: {1:.3f}".format(epoch + 1, time.time() - epoch_time))
             val_mse, base_val_mse = self._eval_plugin_mse(plugin_val_loader, gamma=1.0)
-            print("APEC Epoch: {0} | Loss: {1:.7f} MSE: {2:.7f} NLL: {3:.7f} DeltaL2: {4:.7f}".format(
-                epoch + 1, np.average(train_loss), np.average(train_mse), np.average(train_nll),
-                np.average(train_delta_l2)))
-            print("APEC Epoch: {0} | Val MSE: {1:.7f} Base Val MSE: {2:.7f}".format(
-                epoch + 1, val_mse, base_val_mse))
+            print("APEC Epoch: {0} | Train Loss: {1:.7f} | Val MSE: {2:.7f} Base Val MSE: {3:.7f}".format(
+                epoch + 1, np.average(train_loss), val_mse, base_val_mse))
 
             if best_val_mse is None or val_mse < best_val_mse:
                 best_val_mse = val_mse
@@ -502,16 +271,14 @@ class Exp_APEC(Exp_Basic):
                 torch.save(self.plugin.state_dict(), best_path)
             else:
                 bad_epochs += 1
-                print("APEC early stopping counter: {} out of {}".format(
-                    bad_epochs, self.args.apec_plugin_patience))
+                print("APEC early stopping counter: {} out of {}".format(bad_epochs, self.args.apec_plugin_patience))
                 if bad_epochs >= self.args.apec_plugin_patience:
                     print("APEC plug-in early stopping")
                     break
 
         self.plugin.load_state_dict(torch.load(best_path))
         gamma = self._select_gamma(plugin_val_loader)
-        gamma_path = os.path.join(path, 'apec_gamma.pt')
-        torch.save({'gamma': self._gamma_for_save()}, gamma_path)
+        torch.save({'gamma': self._gamma_for_save()}, os.path.join(path, 'apec_gamma.pt'))
         val_mse, base_val_mse = self._eval_plugin_mse(plugin_val_loader, gamma=gamma)
         print("APEC selected gamma: {} | Shrunk Val MSE: {:.7f} Base Val MSE: {:.7f}".format(
             self._gamma_summary(), val_mse, base_val_mse))
@@ -521,30 +288,23 @@ class Exp_APEC(Exp_Basic):
         self.model.eval()
         self.plugin.eval()
         with torch.no_grad():
-            for batch in cal_loader:
-                batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, x_win, e_win = batch
+            for batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle in cal_loader:
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
                 batch_cycle = batch_cycle.int().to(self.device)
-                x_win = x_win.float().to(self.device)
-                e_win = e_win.float().to(self.device)
-
                 y_hat = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
                 true = self._target_slice(batch_y)
-                delta, logvar = self.plugin(x_win, e_win, y_hat)
-                sigma = torch.exp(0.5 * logvar.clamp(self.args.apec_logvar_min, self.args.apec_logvar_max))
-                score = torch.abs(true - (y_hat + self._apply_gamma(delta))) / (sigma + 1e-6)
-                scores.append(score.detach().cpu())
-
-        scores = torch.cat(scores, dim=0)
-        self.q = torch.quantile(scores, 1 - self.args.apec_alpha, dim=0)
-        torch.save(
-            {'q': self.q, 'alpha': self.args.apec_alpha, 'gamma': self._gamma_for_save()},
-            os.path.join(path, 'apec_q.pt'),
-        )
+                pred = y_hat + self._apply_gamma(self._delta(y_hat.shape[0]))
+                scores.append(torch.abs(true - pred).detach().cpu())
+        scores = torch.cat(scores, dim=0)                          # [N, H, C]
+        self.q = torch.quantile(scores, 1 - self.args.apec_alpha, dim=0)  # [H, C]
+        torch.save({'q': self.q, 'alpha': self.args.apec_alpha, 'gamma': self._gamma_for_save()},
+                   os.path.join(path, 'apec_q.pt'))
         print("APEC conformal q calibrated with shape {}".format(tuple(self.q.shape)))
+
+    # ── train / test ──────────────────────────────────────────────────────────
 
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
@@ -556,6 +316,7 @@ class Exp_APEC(Exp_Basic):
         plugin_idx, cal_idx, plugin_val_idx = self._split_posthoc_indices(len(vali_data))
         print("APEC split sizes | backbone_train: {} backbone_val: {} plugin: {} plugin_val: {} calibration: {}".format(
             len(train_data), len(vali_data), len(plugin_idx), len(plugin_val_idx), len(cal_idx)))
+
         print(">>>>>>>stage 1: train frozen backbone : {}>>>>>>>>>>>>>>>>>>>>>>>>>>".format(setting))
         self._train_backbone(setting, train_loader, vali_loader, path)
 
@@ -563,27 +324,18 @@ class Exp_APEC(Exp_Basic):
             param.requires_grad = False
         self._build_plugin()
 
-        print(">>>>>>>stage 2: build one-step residuals on validation data<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
-        vali_residuals = self._build_one_step_residuals(vali_data)
+        plugin_loader     = self._make_loader(Subset(vali_data, list(plugin_idx)),     shuffle=True)
+        plugin_val_loader = self._make_loader(Subset(vali_data, list(plugin_val_idx)), shuffle=False)
+        cal_loader        = self._make_loader(Subset(vali_data, list(cal_idx)),        shuffle=False)
 
-        feature_offset = self._target_offset()
-        plugin_data = APECWindowDataset(vali_data, plugin_idx, vali_residuals, self.args.apec_window, feature_offset)
-        plugin_val_data = APECWindowDataset(vali_data, plugin_val_idx, vali_residuals, self.args.apec_window, feature_offset)
-        cal_data = APECWindowDataset(vali_data, cal_idx, vali_residuals, self.args.apec_window, feature_offset)
-        plugin_loader = self._make_loader(plugin_data, shuffle=True, drop_last=False)
-        plugin_val_loader = self._make_loader(plugin_val_data, shuffle=False, drop_last=False)
-        cal_loader = self._make_loader(cal_data, shuffle=False, drop_last=False)
-
-        print("APEC plug-in state features: {} gamma mode: {}".format(
-            bool(self.args.apec_use_state_features), self.args.apec_gamma_mode))
-        print(">>>>>>>stage 3: train APEC plug-in<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
+        print(">>>>>>>stage 2: train APEC plug-in<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         self._train_plugin(plugin_loader, plugin_val_loader, path)
-        print(">>>>>>>stage 4: conformal calibration<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
+        print(">>>>>>>stage 3: conformal calibration<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         self._calibrate(cal_loader, path)
         return self.model
 
     def test(self, setting, test=0):
-        test_data, _ = self._get_data(flag='test')
+        _, test_loader = self._get_data(flag='test')
         path = os.path.join(self.args.checkpoints, setting)
         self._build_plugin()
 
@@ -591,43 +343,16 @@ class Exp_APEC(Exp_Basic):
             print('loading APEC backbone, plug-in, and q')
             self.model.load_state_dict(torch.load(os.path.join(path, 'checkpoint.pth')))
             self.plugin.load_state_dict(torch.load(os.path.join(path, 'apec_plugin.pth')))
-            q_state = torch.load(os.path.join(path, 'apec_q.pt'))
-            self.q = q_state['q']
-            if 'gamma' in q_state:
-                self.gamma = q_state['gamma']
-            else:
-                self.gamma = torch.load(os.path.join(path, 'apec_gamma.pt'))['gamma']
-
         if self.q is None:
             q_path = os.path.join(path, 'apec_q.pt')
-            if os.path.exists(q_path):
-                q_state = torch.load(q_path)
-                self.q = q_state['q']
-                if 'gamma' in q_state:
-                    self.gamma = q_state['gamma']
-                else:
-                    self.gamma = torch.load(os.path.join(path, 'apec_gamma.pt'))['gamma']
-            else:
+            if not os.path.exists(q_path):
                 raise RuntimeError('APEC q is not calibrated. Run training before test.')
+            q_state = torch.load(q_path)
+            self.q = q_state['q']
+            self.gamma = q_state.get('gamma', torch.load(os.path.join(path, 'apec_gamma.pt'))['gamma'])
         print("APEC test gamma: {}".format(self._gamma_summary()))
 
-        print(">>>>>>>APEC test: build test residuals<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
-        test_residuals = self._build_one_step_residuals(test_data)
-        feature_offset = self._target_offset()
-        test_apec_data = APECWindowDataset(
-            test_data,
-            range(len(test_data)),
-            test_residuals,
-            self.args.apec_window,
-            feature_offset,
-        )
-        test_loader = self._make_loader(test_apec_data, shuffle=False, drop_last=False)
-
-        preds = []
-        base_preds = []
-        trues = []
-        lowers = []
-        uppers = []
+        preds, base_preds, trues, lowers, uppers = [], [], [], [], []
         folder_path = './test_results/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
@@ -636,50 +361,40 @@ class Exp_APEC(Exp_Basic):
         self.model.eval()
         self.plugin.eval()
         with torch.no_grad():
-            for i, batch in enumerate(test_loader):
-                batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, x_win, e_win = batch
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(test_loader):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
                 batch_cycle = batch_cycle.int().to(self.device)
-                x_win = x_win.float().to(self.device)
-                e_win = e_win.float().to(self.device)
-
                 y_hat = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
                 true = self._target_slice(batch_y)
-                delta, logvar = self.plugin(x_win, e_win, y_hat)
-                sigma = torch.exp(0.5 * logvar.clamp(self.args.apec_logvar_min, self.args.apec_logvar_max))
-                pred = y_hat + self._apply_gamma(delta)
-                lower = pred - q * sigma
-                upper = pred + q * sigma
-
+                pred = y_hat + self._apply_gamma(self._delta(y_hat.shape[0]))
+                lower = pred - q
+                upper = pred + q
                 preds.append(pred.detach().cpu().numpy())
                 base_preds.append(y_hat.detach().cpu().numpy())
                 trues.append(true.detach().cpu().numpy())
                 lowers.append(lower.detach().cpu().numpy())
                 uppers.append(upper.detach().cpu().numpy())
-
                 if i % 20 == 0:
                     input_x = batch_x.detach().cpu().numpy()
-                    true_np = true.detach().cpu().numpy()
-                    pred_np = pred.detach().cpu().numpy()
-                    gt = np.concatenate((input_x[0, :, -1], true_np[0, :, -1]), axis=0)
-                    pd = np.concatenate((input_x[0, :, -1], pred_np[0, :, -1]), axis=0)
+                    gt = np.concatenate((input_x[0, :, -1], true.detach().cpu().numpy()[0, :, -1]))
+                    pd = np.concatenate((input_x[0, :, -1], pred.detach().cpu().numpy()[0, :, -1]))
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
         if self.args.test_flop:
             test_params_flop(self.model, (batch_x.shape[1], batch_x.shape[2]))
             exit()
 
-        preds = np.concatenate(preds, axis=0)
+        preds      = np.concatenate(preds,      axis=0)
         base_preds = np.concatenate(base_preds, axis=0)
-        trues = np.concatenate(trues, axis=0)
-        lowers = np.concatenate(lowers, axis=0)
-        uppers = np.concatenate(uppers, axis=0)
+        trues      = np.concatenate(trues,      axis=0)
+        lowers     = np.concatenate(lowers,     axis=0)
+        uppers     = np.concatenate(uppers,     axis=0)
 
         mae, mse, rmse, mape, mspe, rse, corr = metric(preds, trues)
-        base_mae, base_mse, _, _, _, _, _ = metric(base_preds, trues)
+        base_mae, base_mse, *_ = metric(base_preds, trues)
         coverage = np.mean((trues >= lowers) & (trues <= uppers))
         mean_width = np.mean(uppers - lowers)
         winkler = self._winkler_score(trues, lowers, uppers, self.args.apec_alpha)
@@ -691,20 +406,13 @@ class Exp_APEC(Exp_Basic):
         print('base_mse:{}, base_mae:{}'.format(base_mse, base_mae))
         print('apec_mse:{}, apec_mae:{}, coverage:{}, width:{}, winkler:{}, gamma:{}'.format(
             mse, mae, coverage, mean_width, winkler, self._gamma_summary()))
-        f = open("result.txt", 'a')
-        f.write(setting + "  \n")
-        f.write('base_mse:{}, base_mae:{}\n'.format(base_mse, base_mae))
-        f.write('apec_mse:{}, apec_mae:{}, coverage:{}, width:{}, winkler:{}, gamma:{}'.format(
-            mse, mae, coverage, mean_width, winkler, self._gamma_summary()))
-        f.write('\n\n')
-        f.close()
+        with open("result.txt", 'a') as f:
+            f.write(setting + "  \n")
+            f.write('base_mse:{}, base_mae:{}\n'.format(base_mse, base_mae))
+            f.write('apec_mse:{}, apec_mae:{}, coverage:{}, width:{}, winkler:{}, gamma:{}\n\n'.format(
+                mse, mae, coverage, mean_width, winkler, self._gamma_summary()))
 
-        gamma_save = self._gamma_for_save()
-        if isinstance(gamma_save, torch.Tensor):
-            gamma_save = gamma_save.numpy()
-        np.save(folder_path + 'metrics_apec.npy', np.array(
-            [mae, mse, coverage, mean_width, winkler, self._gamma_metric_value()]))
-        np.save(folder_path + 'gamma.npy', gamma_save)
+        np.save(folder_path + 'metrics_apec.npy', np.array([mae, mse, coverage, mean_width, winkler, self._gamma_metric_value()]))
         np.save(folder_path + 'pred_apec.npy', preds)
         np.save(folder_path + 'pred_base.npy', base_preds)
         np.save(folder_path + 'true.npy', trues)
@@ -714,9 +422,7 @@ class Exp_APEC(Exp_Basic):
     @staticmethod
     def _winkler_score(y, lower, upper, alpha):
         width = upper - lower
-        below = y < lower
-        above = y > upper
         score = width.copy()
-        score[below] += 2.0 / alpha * (lower[below] - y[below])
-        score[above] += 2.0 / alpha * (y[above] - upper[above])
+        score[y < lower] += 2.0 / alpha * (lower[y < lower] - y[y < lower])
+        score[y > upper] += 2.0 / alpha * (y[y > upper] - upper[y > upper])
         return np.mean(score)
