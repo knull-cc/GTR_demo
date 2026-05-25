@@ -487,7 +487,7 @@ class Exp_APEC(Exp_Basic):
                 train_delta_l2.append(delta_l2.item())
 
             print("APEC Epoch: {0} cost time: {1}".format(epoch + 1, time.time() - epoch_time))
-            val_mse, base_val_mse = self._eval_plugin_mse(plugin_val_loader, gamma=0.5)
+            val_mse, base_val_mse = self._eval_plugin_mse(plugin_val_loader, gamma=1.0)
             print("APEC Epoch: {0} | Loss: {1:.7f} MSE: {2:.7f} NLL: {3:.7f} DeltaL2: {4:.7f}".format(
                 epoch + 1, np.average(train_loss), np.average(train_mse), np.average(train_nll),
                 np.average(train_delta_l2)))
