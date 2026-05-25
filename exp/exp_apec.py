@@ -243,7 +243,7 @@ class Exp_APEC(Exp_Basic):
         best_model_path = os.path.join(path, 'checkpoint.pth')
         self.model.load_state_dict(torch.load(best_model_path))
 
-    def _build_one_step_residuals(self, data_set):
+    def _build_one_step_residuals(self, data_set, valid_after=0):
         feature_offset = self._target_offset()
         channels = data_set.data_x[:, feature_offset:].shape[-1]
         residuals = np.zeros((len(data_set.data_x), channels), dtype=np.float32)
@@ -263,10 +263,19 @@ class Exp_APEC(Exp_Basic):
                 outputs = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
                 true = self._target_slice(batch_y)
                 err = (true[:, 0, :] - outputs[:, 0, :]).detach().cpu().numpy().astype(np.float32)
-                positions = np.arange(start, start + batch_size) + data_set.seq_len
-                valid = positions < len(residuals)
-                residuals[positions[valid]] = err[valid]
+                sample_indices = np.arange(start, start + batch_size)
+                positions = sample_indices + data_set.seq_len
+                keep = (sample_indices >= valid_after) & (positions < len(residuals))
+                residuals[positions[keep]] = err[keep]
                 start += batch_size
+
+        first_valid_pos = valid_after + data_set.seq_len
+        if first_valid_pos > 0 and first_valid_pos < len(residuals):
+            tail = min(first_valid_pos + data_set.seq_len, len(residuals))
+            valid_slice = residuals[first_valid_pos:tail]
+            nonzero = np.any(valid_slice != 0, axis=-1)
+            if nonzero.any():
+                residuals[:first_valid_pos] = valid_slice[nonzero].mean(axis=0)
         return residuals
 
     def _set_logvar_trainable(self, trainable):
@@ -276,14 +285,26 @@ class Exp_APEC(Exp_Basic):
     def _apec_loss(self, y, y_hat, delta, logvar, epoch):
         pred = y_hat + delta
         mse = torch.mean((y - pred) ** 2)
+
+        # Phase 1: warmup — pure MSE, logvar head frozen
         if epoch < self.args.apec_var_warmup:
-            return mse, mse.detach(), torch.zeros_like(mse.detach())
+            return mse, mse.detach(), torch.zeros_like(mse)
 
         logvar = logvar.clamp(self.args.apec_logvar_min, self.args.apec_logvar_max)
         var = torch.exp(logvar)
-        nll = 0.5 * (logvar + (y - pred) ** 2 / (var + 1e-6))
-        nll = nll.mean()
-        return mse + self.args.apec_nll_weight * nll, mse.detach(), nll.detach()
+        nll = 0.5 * (logvar + (y - pred) ** 2 / (var + 1e-6)).mean()
+
+        # Phase 2: NLL primary, MSE anneals from apec_mse_lambda → 0
+        warmup_epoch = epoch - self.args.apec_var_warmup
+        if warmup_epoch < self.args.apec_mse_warmup:
+            progress = (warmup_epoch + 1) / self.args.apec_mse_warmup
+            mse_weight = self.args.apec_mse_lambda * (1.0 - progress)
+        else:
+            # Phase 3: pure NLL
+            mse_weight = 0.0
+
+        total = nll + mse_weight * mse
+        return total, mse.detach(), nll.detach()
 
     def _eval_plugin_mse(self, eval_loader, gamma=1.0):
         corrected_losses = []
@@ -436,7 +457,7 @@ class Exp_APEC(Exp_Basic):
             param.requires_grad = False
 
         print(">>>>>>>stage 2: build one-step residuals<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
-        train_residuals = self._build_one_step_residuals(train_data)
+        train_residuals = self._build_one_step_residuals(train_data, valid_after=backbone_val_idx.stop)
 
         feature_offset = self._target_offset()
         plugin_data = APECWindowDataset(train_data, plugin_idx, train_residuals, self.args.apec_window, feature_offset)
