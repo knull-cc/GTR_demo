@@ -79,7 +79,7 @@ class Exp_Main(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        if any(substr in self.args.model for substr in {'CycleNet', 'GTR'}):
+                        if any(substr in self.args.model for substr in {'CycleNet', 'GTR', 'CrossLink'}):
                             outputs = self.model(batch_x, batch_cycle)
                         elif any(substr in self.args.model for substr in
                                  {'Linear', 'MLP', 'SegRNN', 'TST'}):
@@ -90,7 +90,7 @@ class Exp_Main(Exp_Basic):
                             else:
                                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
-                    if any(substr in self.args.model for substr in {'CycleNet', 'GTR'}):
+                    if any(substr in self.args.model for substr in {'CycleNet', 'GTR', 'CrossLink'}):
                         outputs = self.model(batch_x, batch_cycle)
                     elif any(substr in self.args.model for substr in {'Linear', 'MLP', 'SegRNN', 'TST'}):
                         outputs = self.model(batch_x)
@@ -163,7 +163,7 @@ class Exp_Main(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        if any(substr in self.args.model for substr in {'CycleNet', 'GTR'}):
+                        if any(substr in self.args.model for substr in {'CycleNet', 'GTR', 'CrossLink'}):
                             outputs = self.model(batch_x, batch_cycle)
                         elif any(substr in self.args.model for substr in
                                  {'Linear', 'MLP', 'SegRNN', 'TST'}):
@@ -180,7 +180,7 @@ class Exp_Main(Exp_Basic):
                         loss = criterion(outputs, batch_y)
                         train_loss.append(loss.item())
                 else:
-                    if any(substr in self.args.model for substr in {'CycleNet', 'GTR'}):
+                    if any(substr in self.args.model for substr in {'CycleNet', 'GTR', 'CrossLink'}):
                         outputs = self.model(batch_x, batch_cycle)
                     elif any(substr in self.args.model for substr in {'Linear', 'MLP', 'SegRNN', 'TST'}):
                         outputs = self.model(batch_x)
@@ -274,7 +274,7 @@ class Exp_Main(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        if any(substr in self.args.model for substr in {'CycleNet', 'GTR'}):
+                        if any(substr in self.args.model for substr in {'CycleNet', 'GTR', 'CrossLink'}):
                             outputs = self.model(batch_x, batch_cycle)
                         elif any(substr in self.args.model for substr in
                                  {'Linear', 'MLP', 'SegRNN', 'TST'}):
@@ -285,7 +285,7 @@ class Exp_Main(Exp_Basic):
                             else:
                                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
-                    if any(substr in self.args.model for substr in {'CycleNet', 'GTR'}):
+                    if any(substr in self.args.model for substr in {'CycleNet', 'GTR', 'CrossLink'}):
                         outputs = self.model(batch_x, batch_cycle)
                     elif any(substr in self.args.model for substr in {'Linear', 'MLP', 'SegRNN', 'TST'}):
                         outputs = self.model(batch_x)
@@ -384,7 +384,7 @@ class Exp_Main(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        if any(substr in self.args.model for substr in {'CycleNet', 'GTR'}):
+                        if any(substr in self.args.model for substr in {'CycleNet', 'GTR', 'CrossLink'}):
                             outputs = self.model(batch_x, batch_cycle)
                         elif any(substr in self.args.model for substr in
                                  {'Linear', 'MLP', 'SegRNN', 'TST'}):
@@ -395,7 +395,7 @@ class Exp_Main(Exp_Basic):
                             else:
                                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
-                    if any(substr in self.args.model for substr in {'CycleNet', 'GTR'}):
+                    if any(substr in self.args.model for substr in {'CycleNet', 'GTR', 'CrossLink'}):
                         outputs = self.model(batch_x, batch_cycle)
                     elif any(substr in self.args.model for substr in {'Linear', 'MLP', 'SegRNN', 'TST'}):
                         outputs = self.model(batch_x)

@@ -26,7 +26,10 @@ do
       --seq_len $seq_len \
       --pred_len $pred_len \
       --enc_in 358 \
+      --cycle 288 \
+      --use_revin 0 \
       --train_epochs 30 \
+      --patience 5 \
       --crosslink_lags $crosslink_lags \
       --crosslink_rank $crosslink_rank \
       --itr 1 --batch_size 32 --learning_rate 0.003 --random_seed $random_seed
