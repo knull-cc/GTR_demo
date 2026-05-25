@@ -94,7 +94,7 @@ parser.add_argument('--apec_var_warmup', type=int, default=3, help='epochs to tr
 parser.add_argument('--apec_mse_warmup', type=int, default=3, help='epochs to anneal auxiliary MSE after variance warmup')
 parser.add_argument('--apec_mse_lambda', type=float, default=0.1, help='initial auxiliary MSE weight after variance warmup')
 parser.add_argument('--apec_nll_weight', type=float, default=0.05, help='weight of Gaussian NLL after variance warmup')
-parser.add_argument('--apec_delta_l2', type=float, default=0.0001, help='L2 penalty for APEC delta correction')
+parser.add_argument('--apec_delta_l2', type=float, default=0.0, help='L2 penalty for APEC delta correction (0 = disabled; delta is now fixed mean-reversion)')
 parser.add_argument('--apec_plugin_patience', type=int, default=5, help='early stopping patience for APEC plug-in')
 parser.add_argument('--apec_gamma_step', type=float, default=0.1, help='grid step for validation-selected delta shrinkage')
 parser.add_argument('--apec_gamma_mode', type=str, default='scalar',
