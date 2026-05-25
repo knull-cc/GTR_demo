@@ -350,11 +350,16 @@ class Exp_APEC(Exp_Basic):
         gamma_values = np.arange(0.0, 1.0 + 0.5 * self.args.apec_gamma_step, self.args.apec_gamma_step)
         best_gamma = 0.0
         best_mse = None
+        print("APEC gamma sweep:")
         for gamma in gamma_values:
-            mse, _ = self._eval_plugin_mse(eval_loader, gamma=float(gamma))
+            mse, base_mse = self._eval_plugin_mse(eval_loader, gamma=float(gamma))
+            marker = ""
             if best_mse is None or mse < best_mse:
                 best_mse = mse
                 best_gamma = float(gamma)
+                marker = " <-- best"
+            print("  gamma={:.2f}  corrected={:.6f}  base={:.6f}  delta={:+.6f}{}".format(
+                gamma, mse, base_mse, mse - base_mse, marker))
         self.gamma = best_gamma
         return self.gamma
 
@@ -460,7 +465,9 @@ class Exp_APEC(Exp_Basic):
         if not os.path.exists(path):
             os.makedirs(path)
 
-        plugin_idx, plugin_val_idx, cal_idx = self._split_posthoc_indices(len(vali_data))
+        plugin_idx, plugin_val_idx, _ = self._split_posthoc_indices(len(train_data))
+        cal_start = min(self.args.apec_window, max(0, len(vali_data) - 1))
+        cal_idx = range(cal_start, len(vali_data))
         print("APEC split sizes | backbone_train: {} backbone_val: {} plugin: {} plugin_val: {} calibration: {}".format(
             len(train_data), len(vali_data), len(plugin_idx), len(plugin_val_idx), len(cal_idx)))
         print(">>>>>>>stage 1: train frozen backbone : {}>>>>>>>>>>>>>>>>>>>>>>>>>>".format(setting))
@@ -470,12 +477,14 @@ class Exp_APEC(Exp_Basic):
             param.requires_grad = False
         self._build_plugin()
 
-        print(">>>>>>>stage 2: build one-step residuals on official validation<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
+        print(">>>>>>>stage 2: build one-step residuals on training data<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
+        train_residuals = self._build_one_step_residuals(train_data)
+        print(">>>>>>>stage 2b: build one-step residuals on validation data<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         vali_residuals = self._build_one_step_residuals(vali_data)
 
         feature_offset = self._target_offset()
-        plugin_data = APECWindowDataset(vali_data, plugin_idx, vali_residuals, self.args.apec_window, feature_offset)
-        plugin_val_data = APECWindowDataset(vali_data, plugin_val_idx, vali_residuals, self.args.apec_window, feature_offset)
+        plugin_data = APECWindowDataset(train_data, plugin_idx, train_residuals, self.args.apec_window, feature_offset)
+        plugin_val_data = APECWindowDataset(train_data, plugin_val_idx, train_residuals, self.args.apec_window, feature_offset)
         cal_data = APECWindowDataset(vali_data, cal_idx, vali_residuals, self.args.apec_window, feature_offset)
         plugin_loader = self._make_loader(plugin_data, shuffle=True, drop_last=False)
         plugin_val_loader = self._make_loader(plugin_val_data, shuffle=False, drop_last=False)
