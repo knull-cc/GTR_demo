@@ -84,6 +84,7 @@ parser.add_argument('--use_apec', type=int, default=0, help='1: train/test APEC 
 parser.add_argument('--apec_window', type=int, default=48, help='APEC residual context window')
 parser.add_argument('--apec_hidden', type=int, default=128, help='APEC plug-in hidden size')
 parser.add_argument('--apec_dropout', type=float, default=0.1, help='APEC plug-in dropout')
+parser.add_argument('--apec_use_state_features', type=int, default=1, help='1: use trend/error state features in APEC plug-in')
 parser.add_argument('--apec_epochs', type=int, default=15, help='APEC plug-in training epochs')
 parser.add_argument('--apec_learning_rate', type=float, default=0.001, help='APEC plug-in learning rate')
 parser.add_argument('--apec_alpha', type=float, default=0.1, help='APEC conformal miscoverage level')
@@ -99,6 +100,8 @@ parser.add_argument('--apec_nll_weight', type=float, default=0.05, help='weight 
 parser.add_argument('--apec_delta_l2', type=float, default=0.0001, help='L2 penalty for APEC delta correction')
 parser.add_argument('--apec_plugin_patience', type=int, default=5, help='early stopping patience for APEC plug-in')
 parser.add_argument('--apec_gamma_step', type=float, default=0.1, help='grid step for validation-selected delta shrinkage')
+parser.add_argument('--apec_gamma_mode', type=str, default='per_horizon',
+                    help='APEC gamma mode, options: [scalar, per_horizon]')
 parser.add_argument('--apec_logvar_min', type=float, default=-7.0, help='minimum clamped log variance')
 parser.add_argument('--apec_logvar_max', type=float, default=7.0, help='maximum clamped log variance')
 

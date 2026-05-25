@@ -63,6 +63,7 @@ class Exp_APEC(Exp_Basic):
             pred_len=self.args.pred_len,
             d_model=self.args.apec_hidden,
             dropout=self.args.apec_dropout,
+            use_state_features=bool(self.args.apec_use_state_features),
         ).to(self.device)
         return self.plugin
 
@@ -318,6 +319,46 @@ class Exp_APEC(Exp_Basic):
         total = mse + self.args.apec_nll_weight * nll + self.args.apec_delta_l2 * delta_l2
         return total, mse.detach(), nll.detach(), delta_l2.detach()
 
+    def _gamma_to_tensor(self, gamma, ref):
+        if isinstance(gamma, torch.Tensor):
+            gamma_tensor = gamma.to(device=ref.device, dtype=ref.dtype)
+        else:
+            gamma_tensor = torch.tensor(gamma, device=ref.device, dtype=ref.dtype)
+
+        if gamma_tensor.ndim == 0:
+            return gamma_tensor
+        if gamma_tensor.ndim == 1:
+            return gamma_tensor.view(1, -1, 1)
+        if gamma_tensor.ndim == 2:
+            return gamma_tensor.unsqueeze(0)
+        return gamma_tensor
+
+    def _apply_gamma(self, delta, gamma=None):
+        if gamma is None:
+            gamma = self.gamma
+        return self._gamma_to_tensor(gamma, delta) * delta
+
+    def _gamma_for_save(self):
+        if isinstance(self.gamma, torch.Tensor):
+            return self.gamma.detach().cpu()
+        return float(self.gamma)
+
+    def _gamma_summary(self):
+        if isinstance(self.gamma, torch.Tensor):
+            gamma = self.gamma.detach().float().cpu()
+            return "mean:{:.2f}, min:{:.2f}, max:{:.2f}, zero_frac:{:.2f}".format(
+                gamma.mean().item(),
+                gamma.min().item(),
+                gamma.max().item(),
+                (gamma == 0).float().mean().item(),
+            )
+        return "{:.2f}".format(float(self.gamma))
+
+    def _gamma_metric_value(self):
+        if isinstance(self.gamma, torch.Tensor):
+            return self.gamma.detach().float().mean().item()
+        return float(self.gamma)
+
     def _eval_plugin_mse(self, eval_loader, gamma=1.0):
         corrected_losses = []
         base_losses = []
@@ -337,10 +378,58 @@ class Exp_APEC(Exp_Basic):
                 y_hat = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
                 true = self._target_slice(batch_y)
                 delta, _ = self.plugin(x_win, e_win, y_hat)
-                pred = y_hat + gamma * delta
+                pred = y_hat + self._apply_gamma(delta, gamma)
                 corrected_losses.append(torch.mean((true - pred) ** 2).item())
                 base_losses.append(torch.mean((true - y_hat) ** 2).item())
         return np.average(corrected_losses), np.average(base_losses)
+
+    def _select_per_horizon_gamma(self, eval_loader, gamma_values):
+        score_sums = None
+        base_sum = None
+        count = 0
+        self.model.eval()
+        self.plugin.eval()
+        with torch.no_grad():
+            for batch in eval_loader:
+                batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, x_win, e_win = batch
+                batch_x = batch_x.float().to(self.device)
+                batch_y = batch_y.float().to(self.device)
+                batch_x_mark = batch_x_mark.float().to(self.device)
+                batch_y_mark = batch_y_mark.float().to(self.device)
+                batch_cycle = batch_cycle.int().to(self.device)
+                x_win = x_win.float().to(self.device)
+                e_win = e_win.float().to(self.device)
+
+                y_hat = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
+                true = self._target_slice(batch_y)
+                delta, _ = self.plugin(x_win, e_win, y_hat)
+
+                if score_sums is None:
+                    score_sums = torch.zeros(
+                        len(gamma_values), true.size(1), device=self.device, dtype=true.dtype)
+                    base_sum = torch.zeros(true.size(1), device=self.device, dtype=true.dtype)
+
+                base_sum += ((true - y_hat) ** 2).sum(dim=(0, 2))
+                for j, gamma in enumerate(gamma_values):
+                    pred = y_hat + float(gamma) * delta
+                    score_sums[j] += ((true - pred) ** 2).sum(dim=(0, 2))
+                count += true.size(0) * true.size(2)
+
+        mse_grid = score_sums / max(count, 1)
+        base_mse = base_sum / max(count, 1)
+        best_idx = torch.argmin(mse_grid, dim=0)
+        gamma_tensor = torch.tensor(gamma_values, device=self.device, dtype=mse_grid.dtype)[best_idx]
+        best_mse = mse_grid[best_idx, torch.arange(mse_grid.size(1), device=self.device)]
+        self.gamma = gamma_tensor.detach().cpu()
+
+        print("APEC per-horizon gamma sweep summary:")
+        print("  base_mean={:.6f} corrected_mean={:.6f} delta={:+.6f}".format(
+            base_mse.mean().item(),
+            best_mse.mean().item(),
+            best_mse.mean().item() - base_mse.mean().item(),
+        ))
+        print("  gamma {}".format(self._gamma_summary()))
+        return self.gamma
 
     def _select_gamma(self, eval_loader):
         if self.args.apec_gamma_step <= 0:
@@ -348,6 +437,9 @@ class Exp_APEC(Exp_Basic):
             return self.gamma
 
         gamma_values = np.arange(0.0, 1.0 + 0.5 * self.args.apec_gamma_step, self.args.apec_gamma_step)
+        if self.args.apec_gamma_mode == 'per_horizon':
+            return self._select_per_horizon_gamma(eval_loader, gamma_values)
+
         best_gamma = 0.0
         best_mse = None
         print("APEC gamma sweep:")
@@ -426,10 +518,10 @@ class Exp_APEC(Exp_Basic):
         self.plugin.load_state_dict(torch.load(best_path))
         gamma = self._select_gamma(plugin_val_loader)
         gamma_path = os.path.join(path, 'apec_gamma.pt')
-        torch.save({'gamma': gamma}, gamma_path)
+        torch.save({'gamma': self._gamma_for_save()}, gamma_path)
         val_mse, base_val_mse = self._eval_plugin_mse(plugin_val_loader, gamma=gamma)
-        print("APEC selected gamma: {:.2f} | Shrunk Val MSE: {:.7f} Base Val MSE: {:.7f}".format(
-            gamma, val_mse, base_val_mse))
+        print("APEC selected gamma: {} | Shrunk Val MSE: {:.7f} Base Val MSE: {:.7f}".format(
+            self._gamma_summary(), val_mse, base_val_mse))
 
     def _calibrate(self, cal_loader, path):
         scores = []
@@ -450,12 +542,15 @@ class Exp_APEC(Exp_Basic):
                 true = self._target_slice(batch_y)
                 delta, logvar = self.plugin(x_win, e_win, y_hat)
                 sigma = torch.exp(0.5 * logvar.clamp(self.args.apec_logvar_min, self.args.apec_logvar_max))
-                score = torch.abs(true - (y_hat + self.gamma * delta)) / (sigma + 1e-6)
+                score = torch.abs(true - (y_hat + self._apply_gamma(delta))) / (sigma + 1e-6)
                 scores.append(score.detach().cpu())
 
         scores = torch.cat(scores, dim=0)
         self.q = torch.quantile(scores, 1 - self.args.apec_alpha, dim=0)
-        torch.save({'q': self.q, 'alpha': self.args.apec_alpha, 'gamma': self.gamma}, os.path.join(path, 'apec_q.pt'))
+        torch.save(
+            {'q': self.q, 'alpha': self.args.apec_alpha, 'gamma': self._gamma_for_save()},
+            os.path.join(path, 'apec_q.pt'),
+        )
         print("APEC conformal q calibrated with shape {}".format(tuple(self.q.shape)))
 
     def train(self, setting):
@@ -465,7 +560,7 @@ class Exp_APEC(Exp_Basic):
         if not os.path.exists(path):
             os.makedirs(path)
 
-        plugin_idx, cal_idx, plugin_val_idx = self._split_posthoc_indices(len(vali_data))
+        plugin_idx, plugin_val_idx, cal_idx = self._split_posthoc_indices(len(vali_data))
         print("APEC split sizes | backbone_train: {} backbone_val: {} plugin: {} plugin_val: {} calibration: {}".format(
             len(train_data), len(vali_data), len(plugin_idx), len(plugin_val_idx), len(cal_idx)))
         print(">>>>>>>stage 1: train frozen backbone : {}>>>>>>>>>>>>>>>>>>>>>>>>>>".format(setting))
@@ -486,6 +581,8 @@ class Exp_APEC(Exp_Basic):
         plugin_val_loader = self._make_loader(plugin_val_data, shuffle=False, drop_last=False)
         cal_loader = self._make_loader(cal_data, shuffle=False, drop_last=False)
 
+        print("APEC plug-in state features: {} gamma mode: {}".format(
+            bool(self.args.apec_use_state_features), self.args.apec_gamma_mode))
         print(">>>>>>>stage 3: train APEC plug-in<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         self._train_plugin(plugin_loader, plugin_val_loader, path)
         print(">>>>>>>stage 4: conformal calibration<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
@@ -504,9 +601,9 @@ class Exp_APEC(Exp_Basic):
             q_state = torch.load(os.path.join(path, 'apec_q.pt'))
             self.q = q_state['q']
             if 'gamma' in q_state:
-                self.gamma = float(q_state['gamma'])
+                self.gamma = q_state['gamma']
             else:
-                self.gamma = float(torch.load(os.path.join(path, 'apec_gamma.pt'))['gamma'])
+                self.gamma = torch.load(os.path.join(path, 'apec_gamma.pt'))['gamma']
 
         if self.q is None:
             q_path = os.path.join(path, 'apec_q.pt')
@@ -514,12 +611,12 @@ class Exp_APEC(Exp_Basic):
                 q_state = torch.load(q_path)
                 self.q = q_state['q']
                 if 'gamma' in q_state:
-                    self.gamma = float(q_state['gamma'])
+                    self.gamma = q_state['gamma']
                 else:
-                    self.gamma = float(torch.load(os.path.join(path, 'apec_gamma.pt'))['gamma'])
+                    self.gamma = torch.load(os.path.join(path, 'apec_gamma.pt'))['gamma']
             else:
                 raise RuntimeError('APEC q is not calibrated. Run training before test.')
-        print("APEC test gamma: {:.2f}".format(self.gamma))
+        print("APEC test gamma: {}".format(self._gamma_summary()))
 
         print(">>>>>>>APEC test: build test residuals<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         test_residuals = self._build_one_step_residuals(test_data)
@@ -560,7 +657,7 @@ class Exp_APEC(Exp_Basic):
                 true = self._target_slice(batch_y)
                 delta, logvar = self.plugin(x_win, e_win, y_hat)
                 sigma = torch.exp(0.5 * logvar.clamp(self.args.apec_logvar_min, self.args.apec_logvar_max))
-                pred = y_hat + self.gamma * delta
+                pred = y_hat + self._apply_gamma(delta)
                 lower = pred - q * sigma
                 upper = pred + q * sigma
 
@@ -600,16 +697,21 @@ class Exp_APEC(Exp_Basic):
 
         print('base_mse:{}, base_mae:{}'.format(base_mse, base_mae))
         print('apec_mse:{}, apec_mae:{}, coverage:{}, width:{}, winkler:{}, gamma:{}'.format(
-            mse, mae, coverage, mean_width, winkler, self.gamma))
+            mse, mae, coverage, mean_width, winkler, self._gamma_summary()))
         f = open("result.txt", 'a')
         f.write(setting + "  \n")
         f.write('base_mse:{}, base_mae:{}\n'.format(base_mse, base_mae))
         f.write('apec_mse:{}, apec_mae:{}, coverage:{}, width:{}, winkler:{}, gamma:{}'.format(
-            mse, mae, coverage, mean_width, winkler, self.gamma))
+            mse, mae, coverage, mean_width, winkler, self._gamma_summary()))
         f.write('\n\n')
         f.close()
 
-        np.save(folder_path + 'metrics_apec.npy', np.array([mae, mse, coverage, mean_width, winkler, self.gamma]))
+        gamma_save = self._gamma_for_save()
+        if isinstance(gamma_save, torch.Tensor):
+            gamma_save = gamma_save.numpy()
+        np.save(folder_path + 'metrics_apec.npy', np.array(
+            [mae, mse, coverage, mean_width, winkler, self._gamma_metric_value()]))
+        np.save(folder_path + 'gamma.npy', gamma_save)
         np.save(folder_path + 'pred_apec.npy', preds)
         np.save(folder_path + 'pred_base.npy', base_preds)
         np.save(folder_path + 'true.npy', trues)

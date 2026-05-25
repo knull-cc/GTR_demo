@@ -29,7 +29,6 @@ do
       --apec_alpha 0.1 \
       --patience 5 \
       --dropout 0.5 \
-      --itr 1 --batch_size 64 --learning_rate 0.001 --apec_learning_rate 0.001 --random_seed $random_seed
+      --itr 1 --batch_size 256 --num_workers 8 --learning_rate 0.001 --apec_learning_rate 0.001 --random_seed $random_seed
 done
 done
-

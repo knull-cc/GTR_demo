@@ -28,7 +28,6 @@ do
       --apec_window 48 \
       --apec_alpha 0.1 \
       --patience 5 \
-      --itr 1 --batch_size 32 --learning_rate 0.003 --apec_learning_rate 0.001 --random_seed $random_seed
+      --itr 1 --batch_size 128 --num_workers 8 --learning_rate 0.003 --apec_learning_rate 0.001 --random_seed $random_seed
 done
 done
-
