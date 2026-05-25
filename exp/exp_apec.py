@@ -58,9 +58,11 @@ class Exp_APEC(Exp_Basic):
     def _build_plugin(self):
         if self.plugin is not None:
             return self.plugin
+        n_channels = 1 if self.args.features == 'MS' else self.args.enc_in
         self.plugin = APEC.ChannelIndependentPlugIn(
             window=self.args.apec_window,
             pred_len=self.args.pred_len,
+            n_channels=n_channels,
             d_model=self.args.apec_hidden,
             dropout=self.args.apec_dropout,
             use_state_features=bool(self.args.apec_use_state_features),

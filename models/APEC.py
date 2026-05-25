@@ -3,23 +3,25 @@ import torch.nn as nn
 
 
 class ChannelIndependentPlugIn(nn.Module):
-    def __init__(self, window, pred_len, d_model=128, dropout=0.1, use_state_features=True):
+    def __init__(self, window, pred_len, n_channels=1, d_model=128, dropout=0.1, use_state_features=True):
         super(ChannelIndependentPlugIn, self).__init__()
         self.window = window
         self.pred_len = pred_len
+        self.n_channels = n_channels
         self.use_state_features = use_state_features
         self.state_dim = 11
 
         self.enc_x = nn.Linear(window, d_model)
         self.enc_e = nn.Linear(window, d_model)
         self.enc_y = nn.Linear(pred_len, d_model)
+        self.enc_T = nn.Linear(pred_len, d_model)
         if self.use_state_features:
             self.enc_state = nn.Sequential(
                 nn.LayerNorm(self.state_dim),
                 nn.Linear(self.state_dim, d_model),
                 nn.GELU(),
             )
-        fuse_in = 4 * d_model if self.use_state_features else 3 * d_model
+        fuse_in = 5 * d_model if self.use_state_features else 4 * d_model
         self.fuse = nn.Sequential(
             nn.Linear(fuse_in, d_model),
             nn.GELU(),
@@ -33,6 +35,9 @@ class ChannelIndependentPlugIn(nn.Module):
         nn.init.zeros_(self.head_delta.bias)
         nn.init.zeros_(self.head_logvar.weight)
         nn.init.zeros_(self.head_logvar.bias)
+
+        # Global trend parameter: [pred_len, C], analogous to GTR's Q
+        self.T = nn.Parameter(torch.zeros(pred_len, n_channels))
 
     @staticmethod
     def _instance_norm(x):
@@ -78,18 +83,19 @@ class ChannelIndependentPlugIn(nn.Module):
         e_flat = self._instance_norm(e_flat)
         y_flat = self._instance_norm(y_flat)
 
-        parts = [self.enc_x(x_flat), self.enc_e(e_flat), self.enc_y(y_flat)]
+        # T expanded to [B*C, pred_len] — global trend prepended into encoder
+        t_flat = self.T.T.unsqueeze(0).expand(batch_size, -1, -1).reshape(batch_size * channels, self.pred_len)
+
+        parts = [self.enc_x(x_flat), self.enc_e(e_flat), self.enc_y(y_flat), self.enc_T(t_flat)]
         if self.use_state_features:
             parts.append(self.enc_state(state_features))
         hidden = torch.cat(parts, dim=-1)
         return self.fuse(hidden), batch_size, channels
 
     def forward(self, x_win, e_win, y_hat):
-        e_base = e_win.permute(0, 2, 1).mean(dim=-1, keepdim=True)  # [B, C, 1]
-        e_base_flat = e_base.expand(-1, -1, self.pred_len).permute(0, 2, 1)  # [B, H, C]
-
         hidden, batch_size, channels = self.encode(x_win, e_win, y_hat)
         learned = self.head_delta(hidden).view(batch_size, channels, self.pred_len).permute(0, 2, 1)
-        delta = e_base_flat + learned
+        # T is the global trend base; head_delta learns the sample-specific residual on top
+        delta = self.T.unsqueeze(0).expand(batch_size, -1, -1) + learned
         logvar = self.head_logvar(hidden).view(batch_size, channels, self.pred_len).permute(0, 2, 1)
         return delta, logvar

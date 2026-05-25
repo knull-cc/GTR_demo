@@ -180,6 +180,7 @@ def parse_args():
     p.add_argument('--output_attention', action='store_true')
     p.add_argument('--model_type', default='mlp')
     p.add_argument('--use_revin', type=int, default=1)
+    p.add_argument('--individual', type=int, default=0)
     p.add_argument('--num_workers', type=int, default=0)
     p.add_argument('--use_gpu', type=bool, default=True)
     p.add_argument('--gpu', type=int, default=0)
