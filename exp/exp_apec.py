@@ -51,14 +51,20 @@ class APECWindowDataset(Dataset):
 class Exp_APEC(Exp_Basic):
     def __init__(self, args):
         super(Exp_APEC, self).__init__(args)
-        self.plugin = APEC.ChannelIndependentPlugIn(
-            window=args.apec_window,
-            pred_len=args.pred_len,
-            d_model=args.apec_hidden,
-            dropout=args.apec_dropout,
-        ).to(self.device)
+        self.plugin = None
         self.q = None
         self.gamma = 1.0
+
+    def _build_plugin(self):
+        if self.plugin is not None:
+            return self.plugin
+        self.plugin = APEC.ChannelIndependentPlugIn(
+            window=self.args.apec_window,
+            pred_len=self.args.pred_len,
+            d_model=self.args.apec_hidden,
+            dropout=self.args.apec_dropout,
+        ).to(self.device)
+        return self.plugin
 
     def _build_model(self):
         model_dict = {
@@ -165,6 +171,20 @@ class Exp_APEC(Exp_Basic):
             range(plugin_start, plugin_train_end),
             range(plugin_train_end, plugin_end),
             range(plugin_end, train_len),
+        )
+
+    def _split_posthoc_indices(self, data_len):
+        start = min(self.args.apec_window, max(0, data_len - 3))
+        usable = data_len - start
+        plugin_end = start + max(1, int(usable * self.args.apec_val_plugin_ratio))
+        gamma_end = plugin_end + max(1, int(usable * self.args.apec_val_gamma_ratio))
+        plugin_end = min(plugin_end, data_len - 2)
+        gamma_end = min(max(gamma_end, plugin_end + 1), data_len - 1)
+
+        return (
+            range(start, plugin_end),
+            range(plugin_end, gamma_end),
+            range(gamma_end, data_len),
         )
 
     def _train_backbone(self, setting, train_loader, vali_loader, path):
@@ -285,26 +305,18 @@ class Exp_APEC(Exp_Basic):
     def _apec_loss(self, y, y_hat, delta, logvar, epoch):
         pred = y_hat + delta
         mse = torch.mean((y - pred) ** 2)
+        delta_l2 = torch.mean(delta ** 2)
 
-        # Phase 1: warmup — pure MSE, logvar head frozen
         if epoch < self.args.apec_var_warmup:
-            return mse, mse.detach(), torch.zeros_like(mse)
+            total = mse + self.args.apec_delta_l2 * delta_l2
+            return total, mse.detach(), torch.zeros_like(mse), delta_l2.detach()
 
         logvar = logvar.clamp(self.args.apec_logvar_min, self.args.apec_logvar_max)
         var = torch.exp(logvar)
         nll = 0.5 * (logvar + (y - pred) ** 2 / (var + 1e-6)).mean()
 
-        # Phase 2: NLL primary, MSE anneals from apec_mse_lambda → 0
-        warmup_epoch = epoch - self.args.apec_var_warmup
-        if warmup_epoch < self.args.apec_mse_warmup:
-            progress = (warmup_epoch + 1) / self.args.apec_mse_warmup
-            mse_weight = self.args.apec_mse_lambda * (1.0 - progress)
-        else:
-            # Phase 3: pure NLL
-            mse_weight = 0.0
-
-        total = nll + mse_weight * mse
-        return total, mse.detach(), nll.detach()
+        total = mse + self.args.apec_nll_weight * nll + self.args.apec_delta_l2 * delta_l2
+        return total, mse.detach(), nll.detach(), delta_l2.detach()
 
     def _eval_plugin_mse(self, eval_loader, gamma=1.0):
         corrected_losses = []
@@ -359,6 +371,7 @@ class Exp_APEC(Exp_Basic):
             train_loss = []
             train_mse = []
             train_nll = []
+            train_delta_l2 = []
             epoch_time = time.time()
 
             for batch in plugin_loader:
@@ -376,18 +389,20 @@ class Exp_APEC(Exp_Basic):
                     y_hat = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
                 true = self._target_slice(batch_y)
                 delta, logvar = self.plugin(x_win, e_win, y_hat)
-                loss, mse, nll = self._apec_loss(true, y_hat, delta, logvar, epoch)
+                loss, mse, nll, delta_l2 = self._apec_loss(true, y_hat, delta, logvar, epoch)
                 loss.backward()
                 optimizer.step()
 
                 train_loss.append(loss.item())
                 train_mse.append(mse.item())
                 train_nll.append(nll.item())
+                train_delta_l2.append(delta_l2.item())
 
             print("APEC Epoch: {0} cost time: {1}".format(epoch + 1, time.time() - epoch_time))
             val_mse, base_val_mse = self._eval_plugin_mse(plugin_val_loader)
-            print("APEC Epoch: {0} | Loss: {1:.7f} MSE: {2:.7f} NLL: {3:.7f}".format(
-                epoch + 1, np.average(train_loss), np.average(train_mse), np.average(train_nll)))
+            print("APEC Epoch: {0} | Loss: {1:.7f} MSE: {2:.7f} NLL: {3:.7f} DeltaL2: {4:.7f}".format(
+                epoch + 1, np.average(train_loss), np.average(train_mse), np.average(train_nll),
+                np.average(train_delta_l2)))
             print("APEC Epoch: {0} | Val MSE: {1:.7f} Base Val MSE: {2:.7f}".format(
                 epoch + 1, val_mse, base_val_mse))
 
@@ -439,30 +454,29 @@ class Exp_APEC(Exp_Basic):
         print("APEC conformal q calibrated with shape {}".format(tuple(self.q.shape)))
 
     def train(self, setting):
-        train_data, _ = self._get_data(flag='train')
+        train_data, train_loader = self._get_data(flag='train')
+        vali_data, vali_loader = self._get_data(flag='val')
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
             os.makedirs(path)
 
-        backbone_train_idx, backbone_val_idx, plugin_idx, plugin_val_idx, cal_idx = self._split_train_indices(len(train_data))
-        backbone_train_loader = self._make_loader(Subset(train_data, backbone_train_idx), shuffle=True, drop_last=False)
-        backbone_val_loader = self._make_loader(Subset(train_data, backbone_val_idx), shuffle=False, drop_last=False)
-
+        plugin_idx, plugin_val_idx, cal_idx = self._split_posthoc_indices(len(vali_data))
         print("APEC split sizes | backbone_train: {} backbone_val: {} plugin: {} plugin_val: {} calibration: {}".format(
-            len(backbone_train_idx), len(backbone_val_idx), len(plugin_idx), len(plugin_val_idx), len(cal_idx)))
+            len(train_data), len(vali_data), len(plugin_idx), len(plugin_val_idx), len(cal_idx)))
         print(">>>>>>>stage 1: train frozen backbone : {}>>>>>>>>>>>>>>>>>>>>>>>>>>".format(setting))
-        self._train_backbone(setting, backbone_train_loader, backbone_val_loader, path)
+        self._train_backbone(setting, train_loader, vali_loader, path)
 
         for param in self.model.parameters():
             param.requires_grad = False
+        self._build_plugin()
 
-        print(">>>>>>>stage 2: build one-step residuals<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
-        train_residuals = self._build_one_step_residuals(train_data, valid_after=backbone_val_idx.stop)
+        print(">>>>>>>stage 2: build one-step residuals on official validation<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
+        vali_residuals = self._build_one_step_residuals(vali_data)
 
         feature_offset = self._target_offset()
-        plugin_data = APECWindowDataset(train_data, plugin_idx, train_residuals, self.args.apec_window, feature_offset)
-        plugin_val_data = APECWindowDataset(train_data, plugin_val_idx, train_residuals, self.args.apec_window, feature_offset)
-        cal_data = APECWindowDataset(train_data, cal_idx, train_residuals, self.args.apec_window, feature_offset)
+        plugin_data = APECWindowDataset(vali_data, plugin_idx, vali_residuals, self.args.apec_window, feature_offset)
+        plugin_val_data = APECWindowDataset(vali_data, plugin_val_idx, vali_residuals, self.args.apec_window, feature_offset)
+        cal_data = APECWindowDataset(vali_data, cal_idx, vali_residuals, self.args.apec_window, feature_offset)
         plugin_loader = self._make_loader(plugin_data, shuffle=True, drop_last=False)
         plugin_val_loader = self._make_loader(plugin_val_data, shuffle=False, drop_last=False)
         cal_loader = self._make_loader(cal_data, shuffle=False, drop_last=False)
@@ -476,6 +490,7 @@ class Exp_APEC(Exp_Basic):
     def test(self, setting, test=0):
         test_data, _ = self._get_data(flag='test')
         path = os.path.join(self.args.checkpoints, setting)
+        self._build_plugin()
 
         if test:
             print('loading APEC backbone, plug-in, and q')

@@ -20,6 +20,10 @@ class ChannelIndependentPlugIn(nn.Module):
         )
         self.head_delta = nn.Linear(d_model, pred_len)
         self.head_logvar = nn.Linear(d_model, pred_len)
+        nn.init.zeros_(self.head_delta.weight)
+        nn.init.zeros_(self.head_delta.bias)
+        nn.init.zeros_(self.head_logvar.weight)
+        nn.init.zeros_(self.head_logvar.bias)
 
     @staticmethod
     def _instance_norm(x):
