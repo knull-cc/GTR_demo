@@ -1,7 +1,7 @@
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
 from models import Informer, Autoformer, Transformer, DLinear, Linear, NLinear, PatchTST, SegRNN, CycleNet, \
-    iTransformer, TimeXer, GTR, GTRDLinear, GTRPatchTST, GTRiTransformer
+    iTransformer, TimeXer, GTR, GTRDLinear, GTRPatchTST, GTRiTransformer, CrossLink
 from utils.tools import EarlyStopping, adjust_learning_rate, visual, test_params_flop
 from utils.metrics import metric
 
@@ -40,7 +40,8 @@ class Exp_Main(Exp_Basic):
             'GTR': GTR,
             'GTRDLinear': GTRDLinear,
             'GTRPatchTST': GTRPatchTST,
-            'GTRiTransformer': GTRiTransformer
+            'GTRiTransformer': GTRiTransformer,
+            'CrossLink': CrossLink
         }
         model = model_dict[self.args.model].Model(self.args).float()
 
