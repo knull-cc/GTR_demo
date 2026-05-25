@@ -58,6 +58,7 @@ class Exp_APEC(Exp_Basic):
             dropout=args.apec_dropout,
         ).to(self.device)
         self.q = None
+        self.gamma = 1.0
 
     def _build_model(self):
         model_dict = {
@@ -149,7 +150,11 @@ class Exp_APEC(Exp_Basic):
         backbone_end = max(2, min(backbone_end, train_len - 2))
         plugin_end = max(backbone_end + 1, min(plugin_end, train_len - 1))
         plugin_start = min(backbone_end + self.args.apec_window, train_len - 2)
-        plugin_end = max(plugin_start + 1, plugin_end)
+        plugin_end = min(max(plugin_start + 2, plugin_end), train_len - 1)
+        plugin_len = plugin_end - plugin_start
+        plugin_val_size = max(1, int(plugin_len * self.args.apec_plugin_val_ratio))
+        plugin_val_size = min(plugin_val_size, plugin_len - 1)
+        plugin_train_end = plugin_end - plugin_val_size
 
         backbone_val_size = max(1, int(backbone_end * 0.15))
         backbone_train_end = max(1, backbone_end - backbone_val_size)
@@ -157,7 +162,8 @@ class Exp_APEC(Exp_Basic):
         return (
             range(0, backbone_train_end),
             range(backbone_train_end, backbone_end),
-            range(plugin_start, plugin_end),
+            range(plugin_start, plugin_train_end),
+            range(plugin_train_end, plugin_end),
             range(plugin_end, train_len),
         )
 
@@ -276,13 +282,54 @@ class Exp_APEC(Exp_Basic):
         logvar = logvar.clamp(self.args.apec_logvar_min, self.args.apec_logvar_max)
         var = torch.exp(logvar)
         nll = 0.5 * (logvar + (y - pred) ** 2 / (var + 1e-6))
-        warmup = max(1, self.args.apec_mse_warmup)
-        mse_weight = self.args.apec_mse_lambda * max(0.0, 1.0 - (epoch - self.args.apec_var_warmup) / warmup)
-        return nll.mean() + mse_weight * mse, mse.detach(), nll.mean().detach()
+        nll = nll.mean()
+        return mse + self.args.apec_nll_weight * nll, mse.detach(), nll.detach()
 
-    def _train_plugin(self, plugin_loader, path):
+    def _eval_plugin_mse(self, eval_loader, gamma=1.0):
+        corrected_losses = []
+        base_losses = []
+        self.model.eval()
+        self.plugin.eval()
+        with torch.no_grad():
+            for batch in eval_loader:
+                batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle, x_win, e_win = batch
+                batch_x = batch_x.float().to(self.device)
+                batch_y = batch_y.float().to(self.device)
+                batch_x_mark = batch_x_mark.float().to(self.device)
+                batch_y_mark = batch_y_mark.float().to(self.device)
+                batch_cycle = batch_cycle.int().to(self.device)
+                x_win = x_win.float().to(self.device)
+                e_win = e_win.float().to(self.device)
+
+                y_hat = self._forward_backbone(batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle)
+                true = self._target_slice(batch_y)
+                delta, _ = self.plugin(x_win, e_win, y_hat)
+                pred = y_hat + gamma * delta
+                corrected_losses.append(torch.mean((true - pred) ** 2).item())
+                base_losses.append(torch.mean((true - y_hat) ** 2).item())
+        return np.average(corrected_losses), np.average(base_losses)
+
+    def _select_gamma(self, eval_loader):
+        if self.args.apec_gamma_step <= 0:
+            self.gamma = 1.0
+            return self.gamma
+
+        gamma_values = np.arange(0.0, 1.0 + 0.5 * self.args.apec_gamma_step, self.args.apec_gamma_step)
+        best_gamma = 0.0
+        best_mse = None
+        for gamma in gamma_values:
+            mse, _ = self._eval_plugin_mse(eval_loader, gamma=float(gamma))
+            if best_mse is None or mse < best_mse:
+                best_mse = mse
+                best_gamma = float(gamma)
+        self.gamma = best_gamma
+        return self.gamma
+
+    def _train_plugin(self, plugin_loader, plugin_val_loader, path):
         optimizer = optim.Adam(self.plugin.parameters(), lr=self.args.apec_learning_rate)
         best_path = os.path.join(path, 'apec_plugin.pth')
+        best_val_mse = None
+        bad_epochs = 0
 
         for epoch in range(self.args.apec_epochs):
             self.model.eval()
@@ -317,10 +364,31 @@ class Exp_APEC(Exp_Basic):
                 train_nll.append(nll.item())
 
             print("APEC Epoch: {0} cost time: {1}".format(epoch + 1, time.time() - epoch_time))
+            val_mse, base_val_mse = self._eval_plugin_mse(plugin_val_loader)
             print("APEC Epoch: {0} | Loss: {1:.7f} MSE: {2:.7f} NLL: {3:.7f}".format(
                 epoch + 1, np.average(train_loss), np.average(train_mse), np.average(train_nll)))
+            print("APEC Epoch: {0} | Val MSE: {1:.7f} Base Val MSE: {2:.7f}".format(
+                epoch + 1, val_mse, base_val_mse))
 
-        torch.save(self.plugin.state_dict(), best_path)
+            if best_val_mse is None or val_mse < best_val_mse:
+                best_val_mse = val_mse
+                bad_epochs = 0
+                torch.save(self.plugin.state_dict(), best_path)
+            else:
+                bad_epochs += 1
+                print("APEC early stopping counter: {} out of {}".format(
+                    bad_epochs, self.args.apec_plugin_patience))
+                if bad_epochs >= self.args.apec_plugin_patience:
+                    print("APEC plug-in early stopping")
+                    break
+
+        self.plugin.load_state_dict(torch.load(best_path))
+        gamma = self._select_gamma(plugin_val_loader)
+        gamma_path = os.path.join(path, 'apec_gamma.pt')
+        torch.save({'gamma': gamma}, gamma_path)
+        val_mse, base_val_mse = self._eval_plugin_mse(plugin_val_loader, gamma=gamma)
+        print("APEC selected gamma: {:.2f} | Shrunk Val MSE: {:.7f} Base Val MSE: {:.7f}".format(
+            gamma, val_mse, base_val_mse))
 
     def _calibrate(self, cal_loader, path):
         scores = []
@@ -341,12 +409,12 @@ class Exp_APEC(Exp_Basic):
                 true = self._target_slice(batch_y)
                 delta, logvar = self.plugin(x_win, e_win, y_hat)
                 sigma = torch.exp(0.5 * logvar.clamp(self.args.apec_logvar_min, self.args.apec_logvar_max))
-                score = torch.abs(true - (y_hat + delta)) / (sigma + 1e-6)
+                score = torch.abs(true - (y_hat + self.gamma * delta)) / (sigma + 1e-6)
                 scores.append(score.detach().cpu())
 
         scores = torch.cat(scores, dim=0)
         self.q = torch.quantile(scores, 1 - self.args.apec_alpha, dim=0)
-        torch.save({'q': self.q, 'alpha': self.args.apec_alpha}, os.path.join(path, 'apec_q.pt'))
+        torch.save({'q': self.q, 'alpha': self.args.apec_alpha, 'gamma': self.gamma}, os.path.join(path, 'apec_q.pt'))
         print("APEC conformal q calibrated with shape {}".format(tuple(self.q.shape)))
 
     def train(self, setting):
@@ -355,12 +423,12 @@ class Exp_APEC(Exp_Basic):
         if not os.path.exists(path):
             os.makedirs(path)
 
-        backbone_train_idx, backbone_val_idx, plugin_idx, cal_idx = self._split_train_indices(len(train_data))
+        backbone_train_idx, backbone_val_idx, plugin_idx, plugin_val_idx, cal_idx = self._split_train_indices(len(train_data))
         backbone_train_loader = self._make_loader(Subset(train_data, backbone_train_idx), shuffle=True, drop_last=False)
         backbone_val_loader = self._make_loader(Subset(train_data, backbone_val_idx), shuffle=False, drop_last=False)
 
-        print("APEC split sizes | backbone_train: {} backbone_val: {} plugin: {} calibration: {}".format(
-            len(backbone_train_idx), len(backbone_val_idx), len(plugin_idx), len(cal_idx)))
+        print("APEC split sizes | backbone_train: {} backbone_val: {} plugin: {} plugin_val: {} calibration: {}".format(
+            len(backbone_train_idx), len(backbone_val_idx), len(plugin_idx), len(plugin_val_idx), len(cal_idx)))
         print(">>>>>>>stage 1: train frozen backbone : {}>>>>>>>>>>>>>>>>>>>>>>>>>>".format(setting))
         self._train_backbone(setting, backbone_train_loader, backbone_val_loader, path)
 
@@ -372,12 +440,14 @@ class Exp_APEC(Exp_Basic):
 
         feature_offset = self._target_offset()
         plugin_data = APECWindowDataset(train_data, plugin_idx, train_residuals, self.args.apec_window, feature_offset)
+        plugin_val_data = APECWindowDataset(train_data, plugin_val_idx, train_residuals, self.args.apec_window, feature_offset)
         cal_data = APECWindowDataset(train_data, cal_idx, train_residuals, self.args.apec_window, feature_offset)
         plugin_loader = self._make_loader(plugin_data, shuffle=True, drop_last=False)
+        plugin_val_loader = self._make_loader(plugin_val_data, shuffle=False, drop_last=False)
         cal_loader = self._make_loader(cal_data, shuffle=False, drop_last=False)
 
         print(">>>>>>>stage 3: train APEC plug-in<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
-        self._train_plugin(plugin_loader, path)
+        self._train_plugin(plugin_loader, plugin_val_loader, path)
         print(">>>>>>>stage 4: conformal calibration<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         self._calibrate(cal_loader, path)
         return self.model
@@ -390,14 +460,25 @@ class Exp_APEC(Exp_Basic):
             print('loading APEC backbone, plug-in, and q')
             self.model.load_state_dict(torch.load(os.path.join(path, 'checkpoint.pth')))
             self.plugin.load_state_dict(torch.load(os.path.join(path, 'apec_plugin.pth')))
-            self.q = torch.load(os.path.join(path, 'apec_q.pt'))['q']
+            q_state = torch.load(os.path.join(path, 'apec_q.pt'))
+            self.q = q_state['q']
+            if 'gamma' in q_state:
+                self.gamma = float(q_state['gamma'])
+            else:
+                self.gamma = float(torch.load(os.path.join(path, 'apec_gamma.pt'))['gamma'])
 
         if self.q is None:
             q_path = os.path.join(path, 'apec_q.pt')
             if os.path.exists(q_path):
-                self.q = torch.load(q_path)['q']
+                q_state = torch.load(q_path)
+                self.q = q_state['q']
+                if 'gamma' in q_state:
+                    self.gamma = float(q_state['gamma'])
+                else:
+                    self.gamma = float(torch.load(os.path.join(path, 'apec_gamma.pt'))['gamma'])
             else:
                 raise RuntimeError('APEC q is not calibrated. Run training before test.')
+        print("APEC test gamma: {:.2f}".format(self.gamma))
 
         print(">>>>>>>APEC test: build test residuals<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         test_residuals = self._build_one_step_residuals(test_data)
@@ -438,7 +519,7 @@ class Exp_APEC(Exp_Basic):
                 true = self._target_slice(batch_y)
                 delta, logvar = self.plugin(x_win, e_win, y_hat)
                 sigma = torch.exp(0.5 * logvar.clamp(self.args.apec_logvar_min, self.args.apec_logvar_max))
-                pred = y_hat + delta
+                pred = y_hat + self.gamma * delta
                 lower = pred - q * sigma
                 upper = pred + q * sigma
 
@@ -477,17 +558,17 @@ class Exp_APEC(Exp_Basic):
             os.makedirs(folder_path)
 
         print('base_mse:{}, base_mae:{}'.format(base_mse, base_mae))
-        print('apec_mse:{}, apec_mae:{}, coverage:{}, width:{}, winkler:{}'.format(
-            mse, mae, coverage, mean_width, winkler))
+        print('apec_mse:{}, apec_mae:{}, coverage:{}, width:{}, winkler:{}, gamma:{}'.format(
+            mse, mae, coverage, mean_width, winkler, self.gamma))
         f = open("result.txt", 'a')
         f.write(setting + "  \n")
         f.write('base_mse:{}, base_mae:{}\n'.format(base_mse, base_mae))
-        f.write('apec_mse:{}, apec_mae:{}, coverage:{}, width:{}, winkler:{}'.format(
-            mse, mae, coverage, mean_width, winkler))
+        f.write('apec_mse:{}, apec_mae:{}, coverage:{}, width:{}, winkler:{}, gamma:{}'.format(
+            mse, mae, coverage, mean_width, winkler, self.gamma))
         f.write('\n\n')
         f.close()
 
-        np.save(folder_path + 'metrics_apec.npy', np.array([mae, mse, coverage, mean_width, winkler]))
+        np.save(folder_path + 'metrics_apec.npy', np.array([mae, mse, coverage, mean_width, winkler, self.gamma]))
         np.save(folder_path + 'pred_apec.npy', preds)
         np.save(folder_path + 'pred_base.npy', base_preds)
         np.save(folder_path + 'true.npy', trues)
