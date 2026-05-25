@@ -465,7 +465,7 @@ class Exp_APEC(Exp_Basic):
         if not os.path.exists(path):
             os.makedirs(path)
 
-        plugin_idx, plugin_val_idx, cal_idx = self._split_posthoc_indices(len(vali_data))
+        plugin_idx, cal_idx, plugin_val_idx = self._split_posthoc_indices(len(vali_data))
         print("APEC split sizes | backbone_train: {} backbone_val: {} plugin: {} plugin_val: {} calibration: {}".format(
             len(train_data), len(vali_data), len(plugin_idx), len(plugin_val_idx), len(cal_idx)))
         print(">>>>>>>stage 1: train frozen backbone : {}>>>>>>>>>>>>>>>>>>>>>>>>>>".format(setting))
