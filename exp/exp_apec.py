@@ -399,7 +399,7 @@ class Exp_APEC(Exp_Basic):
         gamma_tensor = torch.tensor(gamma_values, device=self.device, dtype=mse_grid.dtype)[best_idx]
         best_mse = mse_grid[best_idx, torch.arange(mse_grid.size(1), device=self.device)]
         # only use correction for horizons where improvement exceeds threshold
-        threshold = getattr(self.args, 'apec_gamma_min_improve', 0.003)
+        threshold = getattr(self.args, 'apec_gamma_min_improve', 0.01)
         no_improve = (base_mse - best_mse) < threshold * base_mse.clamp_min(1e-8)
         gamma_tensor = gamma_tensor.masked_fill(no_improve, 0.0)
         self.gamma = gamma_tensor.detach().cpu()
@@ -424,9 +424,12 @@ class Exp_APEC(Exp_Basic):
 
         best_gamma = 0.0
         best_mse = None
+        baseline_mse = None
         print("APEC gamma sweep:")
         for gamma in gamma_values:
             mse, base_mse = self._eval_plugin_mse(eval_loader, gamma=float(gamma))
+            if baseline_mse is None:
+                baseline_mse = base_mse
             marker = ""
             if best_mse is None or mse < best_mse:
                 best_mse = mse
@@ -434,6 +437,12 @@ class Exp_APEC(Exp_Basic):
                 marker = " <-- best"
             print("  gamma={:.2f}  corrected={:.6f}  base={:.6f}  delta={:+.6f}{}".format(
                 gamma, mse, base_mse, mse - base_mse, marker))
+        threshold = getattr(self.args, 'apec_gamma_min_improve', 0.01)
+        if baseline_mse is not None and best_mse is not None:
+            if (baseline_mse - best_mse) < threshold * max(baseline_mse, 1e-8):
+                best_gamma = 0.0
+                print("  improvement {:.4f}% < threshold {:.1f}%, forcing gamma=0.0".format(
+                    100.0 * (baseline_mse - best_mse) / max(baseline_mse, 1e-8), threshold * 100))
         self.gamma = best_gamma
         return self.gamma
 

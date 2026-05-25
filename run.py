@@ -97,10 +97,10 @@ parser.add_argument('--apec_nll_weight', type=float, default=0.05, help='weight 
 parser.add_argument('--apec_delta_l2', type=float, default=0.0001, help='L2 penalty for APEC delta correction')
 parser.add_argument('--apec_plugin_patience', type=int, default=5, help='early stopping patience for APEC plug-in')
 parser.add_argument('--apec_gamma_step', type=float, default=0.1, help='grid step for validation-selected delta shrinkage')
-parser.add_argument('--apec_gamma_mode', type=str, default='per_horizon',
+parser.add_argument('--apec_gamma_mode', type=str, default='scalar',
                     help='APEC gamma mode, options: [scalar, per_horizon]')
-parser.add_argument('--apec_gamma_min_improve', type=float, default=0.003,
-                    help='per-horizon gamma: min relative MSE improvement to use correction (0.003 = 0.3%%)')
+parser.add_argument('--apec_gamma_min_improve', type=float, default=0.01,
+                    help='min relative MSE improvement to apply correction (0.01 = 1%%), per_horizon uses same threshold')
 parser.add_argument('--apec_logvar_min', type=float, default=-7.0, help='minimum clamped log variance')
 parser.add_argument('--apec_logvar_max', type=float, default=7.0, help='maximum clamped log variance')
 
