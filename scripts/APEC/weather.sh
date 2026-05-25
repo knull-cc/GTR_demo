@@ -1,17 +1,18 @@
 model_name=GTR
 
-root_path_name=./dataset/PEMS
-data_path_name=PEMS07.npz
-model_id_name=PEMS07
-data_name=PEMS
+root_path_name=./dataset/weather
+data_path_name=weather.csv
+model_id_name=APEC_weather
+data_name=custom
 
 seq_len=96
-for pred_len in 12 24 48 96
+for pred_len in 96 192 336 720
 do
 for random_seed in 2024
 do
     python -u run.py \
       --is_training 1 \
+      --use_apec 1 \
       --root_path $root_path_name \
       --data_path $data_path_name \
       --model_id $model_id_name'_'$seq_len'_'$pred_len \
@@ -20,11 +21,15 @@ do
       --features M \
       --seq_len $seq_len \
       --pred_len $pred_len \
-      --enc_in 883 \
-      --cycle 288 \
+      --enc_in 21 \
+      --cycle 144 \
       --train_epochs 30 \
+      --apec_epochs 10 \
+      --apec_window 48 \
+      --apec_alpha 0.1 \
       --patience 5 \
-      --use_revin 0 \
-      --itr 1 --batch_size 32 --learning_rate 0.003 --random_seed $random_seed
+      --dropout 0.5 \
+      --itr 1 --batch_size 64 --learning_rate 0.001 --apec_learning_rate 0.001 --random_seed $random_seed
 done
 done
+

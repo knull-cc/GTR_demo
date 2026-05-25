@@ -21,8 +21,7 @@ do
       --seq_len $seq_len \
       --pred_len $pred_len \
       --enc_in 7 \
-      --cycle 168 \
-      --proto_num 8 \
+      --cycle 24 \
       --train_epochs 30 \
       --patience 5 \
       --dropout 0.5 \

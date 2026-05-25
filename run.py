@@ -2,6 +2,7 @@ import argparse
 import os
 import torch
 from exp.exp_main import Exp_Main
+from exp.exp_apec import Exp_APEC
 import random
 import numpy as np
 
@@ -34,7 +35,6 @@ parser.add_argument('--pred_len', type=int, default=96, help='prediction sequenc
 
 # TQNet & CycleNet
 parser.add_argument('--cycle', type=int, default=24, help='cycle length')
-parser.add_argument('--proto_num', type=int, default=8, help='number of shared cycle prototypes for GTR/ProtoCycle')
 parser.add_argument('--model_type', type=str, default='mlp', help='model type, options: [linear, mlp]')
 parser.add_argument('--use_revin', type=int, default=1, help='1: use revin or 0: no revin')
 
@@ -79,6 +79,22 @@ parser.add_argument('--activation', type=str, default='gelu', help='activation')
 parser.add_argument('--output_attention', action='store_true', help='whether to output attention in ecoder')
 parser.add_argument('--do_predict', action='store_true', help='whether to predict unseen future data')
 
+# APEC: Adaptive Post-hoc Error Correction
+parser.add_argument('--use_apec', type=int, default=0, help='1: train/test APEC post-hoc error correction')
+parser.add_argument('--apec_window', type=int, default=48, help='APEC residual context window')
+parser.add_argument('--apec_hidden', type=int, default=128, help='APEC plug-in hidden size')
+parser.add_argument('--apec_dropout', type=float, default=0.1, help='APEC plug-in dropout')
+parser.add_argument('--apec_epochs', type=int, default=10, help='APEC plug-in training epochs')
+parser.add_argument('--apec_learning_rate', type=float, default=0.001, help='APEC plug-in learning rate')
+parser.add_argument('--apec_alpha', type=float, default=0.1, help='APEC conformal miscoverage level')
+parser.add_argument('--apec_backbone_ratio', type=float, default=0.6, help='fraction of train samples reserved for backbone')
+parser.add_argument('--apec_plugin_ratio', type=float, default=0.2, help='fraction of train samples reserved for plug-in')
+parser.add_argument('--apec_var_warmup', type=int, default=3, help='epochs to train delta before log variance')
+parser.add_argument('--apec_mse_warmup', type=int, default=3, help='epochs to anneal auxiliary MSE after variance warmup')
+parser.add_argument('--apec_mse_lambda', type=float, default=0.1, help='initial auxiliary MSE weight after variance warmup')
+parser.add_argument('--apec_logvar_min', type=float, default=-7.0, help='minimum clamped log variance')
+parser.add_argument('--apec_logvar_max', type=float, default=7.0, help='maximum clamped log variance')
+
 # optimization
 parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
 parser.add_argument('--itr', type=int, default=1, help='experiments times')
@@ -119,14 +135,14 @@ if args.use_gpu and args.use_multi_gpu:
 print('Args in experiment:')
 print(args)
 
-Exp = Exp_Main
+Exp = Exp_APEC if args.use_apec else Exp_Main
 
 
 if args.is_training:
     for ii in range(args.itr):
 
         # setting record of experiments
-        proto_tag = '_proto{}'.format(args.proto_num) if args.model == 'GTR' else ''
+        apec_tag = '_APEC_w{}_a{}'.format(args.apec_window, args.apec_alpha) if args.use_apec else ''
         setting = '{}_{}_{}_ft{}_sl{}_pl{}_cycle{}{}_seed{}'.format(
             args.model_id,
             args.model,
@@ -135,7 +151,7 @@ if args.is_training:
             args.seq_len,
             args.pred_len,
             args.cycle,
-            proto_tag,
+            apec_tag,
             fix_seed)
 
         exp = Exp(args)  # set experiments
@@ -145,14 +161,16 @@ if args.is_training:
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
         exp.test(setting)
 
-        if args.do_predict:
+        if args.do_predict and not args.use_apec:
             print('>>>>>>>predicting : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             exp.predict(setting, True)
+        elif args.do_predict:
+            print('APEC does not implement do_predict yet; skipped unseen-future prediction.')
 
         torch.cuda.empty_cache()
 else:
     ii = 0
-    proto_tag = '_proto{}'.format(args.proto_num) if args.model == 'GTR' else ''
+    apec_tag = '_APEC_w{}_a{}'.format(args.apec_window, args.apec_alpha) if args.use_apec else ''
     setting = '{}_{}_{}_ft{}_sl{}_pl{}_cycle{}{}_seed{}'.format(
         args.model_id,
         args.model,
@@ -161,7 +179,7 @@ else:
         args.seq_len,
         args.pred_len,
         args.cycle,
-        proto_tag,
+        apec_tag,
         fix_seed)
 
     exp = Exp(args)  # set experiments
